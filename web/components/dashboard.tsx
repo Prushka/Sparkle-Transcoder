@@ -430,7 +430,7 @@ function EpisodeRow({ item, onTranscode }: { item: MediaItem; onTranscode: (item
 function Poster({ item, className }: { item: MediaItem; className?: string }) {
   const src = posterUrl(item);
   return (
-    <div className={cn("flex aspect-[2/3] items-center justify-center overflow-hidden rounded-md border bg-muted", className)}>
+    <div className={cn("flex aspect-2/3 items-center justify-center overflow-hidden rounded-md border bg-muted", className)}>
       {src ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={src} alt="" className="h-full w-full object-cover" loading="lazy" />
