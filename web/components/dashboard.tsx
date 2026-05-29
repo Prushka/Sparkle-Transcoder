@@ -110,6 +110,22 @@ export function Dashboard() {
     loadInitial();
   }, [loadInitial]);
 
+  const loadScanStatus = React.useCallback(async () => {
+    try {
+      const scan = await api.scanStatus();
+      setState((current) => ({ ...current, scan }));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load scan status");
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!state.scan?.running) return;
+    const interval = window.setInterval(loadScanStatus, 5000);
+    return () => window.clearInterval(interval);
+  }, [loadScanStatus, state.scan?.running]);
+
   const loadLibrary = React.useCallback(async () => {
     try {
       const [mediaResponse, taskResponse] = await Promise.all([api.media(), api.tasks()]);
@@ -207,9 +223,10 @@ export function Dashboard() {
     setBusy(true);
     try {
       const scan = await api.startScan(force);
-      setState((current) => ({ ...current, scan }));
+      setState((current) => ({ ...current, scan: { ...scan, running: true } }));
       if (activeTab === "library") {
         await loadLibrary();
+        setState((current) => ({ ...current, scan: { ...(current.scan ?? scan), running: true } }));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");

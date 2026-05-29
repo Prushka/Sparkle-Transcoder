@@ -46,6 +46,11 @@ func main() {
 
 	runner := task.NewRunner(cfg, scanner, executil.LocalRunner{LowPriority: cfg.EnableLowPriority})
 	store := task.NewStore(cfg, scanner, runner)
+	go func() {
+		if err := store.Refresh(context.Background()); err != nil {
+			log.Errorf("startup task refresh failed: %v", err)
+		}
+	}()
 	server := api.New(cfg, scanner, store)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
