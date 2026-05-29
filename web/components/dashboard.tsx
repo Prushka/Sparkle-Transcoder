@@ -65,6 +65,8 @@ type LoadState = {
 
 type MediaTaskIndex = Map<string, TranscodeTask>;
 type QueueMode = "replace" | "incomplete";
+type CodecFilterState = "include" | "exclude";
+type CodecFilters = Record<string, CodecFilterState>;
 
 type TaskSelection = {
   title: string;
@@ -102,7 +104,7 @@ export function Dashboard() {
   const [taskLimit, setTaskLimit] = React.useState(100);
   const [taskQuery, setTaskQuery] = React.useState("");
   const [taskCompletion, setTaskCompletion] = React.useState("all");
-  const [codecFilters, setCodecFilters] = React.useState<string[]>([]);
+  const [codecFilters, setCodecFilters] = React.useState<CodecFilters>({});
   const [subtitleFilters, setSubtitleFilters] = React.useState<string[]>([]);
   const [deleteFilteredOpen, setDeleteFilteredOpen] = React.useState(false);
   const [taskRefreshing, setTaskRefreshing] = React.useState(false);
@@ -655,8 +657,8 @@ function TaskToolbar({
   completion: string;
   onCompletionChange: (value: string) => void;
   codecOptions: string[];
-  codecFilters: string[];
-  onCodecFiltersChange: (value: string[]) => void;
+  codecFilters: CodecFilters;
+  onCodecFiltersChange: (value: CodecFilters) => void;
   subtitleOptions: string[];
   subtitleFilters: string[];
   onSubtitleFiltersChange: (value: string[]) => void;
@@ -669,7 +671,7 @@ function TaskToolbar({
   onDeleteFiltered: () => void;
   disabled: boolean;
 }) {
-  const hasFilters = query.trim() !== "" || completion !== "all" || codecFilters.length > 0 || subtitleFilters.length > 0;
+  const hasFilters = query.trim() !== "" || completion !== "all" || hasCodecFilters(codecFilters) || subtitleFilters.length > 0;
   return (
     <div className="mb-4 rounded-lg border bg-card/60 p-3">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -691,7 +693,7 @@ function TaskToolbar({
                   onClick={() => {
                     onQueryChange("");
                     onCompletionChange("all");
-                    onCodecFiltersChange([]);
+                    onCodecFiltersChange({});
                     onSubtitleFiltersChange([]);
                   }}
                 >
@@ -732,7 +734,7 @@ function TaskToolbar({
                 ))}
               </div>
             </div>
-            <FilterGroup title="Encoded codecs" options={codecOptions} selected={codecFilters} onChange={onCodecFiltersChange} emptyLabel="No encoded codecs yet" />
+            <TriStateFilterGroup title="Encoded codecs" options={codecOptions} filters={codecFilters} onChange={onCodecFiltersChange} emptyLabel="No encoded codecs yet" />
             <FilterGroup
               title="Subtitle languages"
               options={subtitleOptions}
@@ -792,6 +794,49 @@ function FilterGroup({
               >
                 <span className="truncate">{option}</span>
               </Button>
+            );
+          })
+        ) : (
+          <span className="text-xs text-muted-foreground">{emptyLabel}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TriStateFilterGroup({
+  title,
+  options,
+  filters,
+  onChange,
+  emptyLabel
+}: {
+  title: string;
+  options: string[];
+  filters: CodecFilters;
+  onChange: (value: CodecFilters) => void;
+  emptyLabel: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-1 text-xs font-medium text-muted-foreground">{title}</div>
+      <div className="flex min-h-7 flex-wrap gap-2">
+        {options.length ? (
+          options.map((option) => {
+            const state = filters[option];
+            return (
+              <Tip content={triStateFilterTip(option, state)} key={option}>
+                <Button
+                  type="button"
+                  variant={state === "include" ? "default" : "outline"}
+                  size="sm"
+                  className={cn("h-7 max-w-full px-2", state === "exclude" && "border-destructive/60 text-destructive hover:bg-destructive/10 hover:text-destructive")}
+                  onClick={() => onChange(nextCodecFilters(filters, option))}
+                >
+                  {state === "include" ? <CheckCircle2 /> : state === "exclude" ? <Ban /> : null}
+                  <span className="truncate">{option}</span>
+                </Button>
+              </Tip>
             );
           })
         ) : (
@@ -1560,17 +1605,54 @@ function taskOptions(tasks: TranscodeTask[], getValues: (task: TranscodeTask) =>
   return Array.from(new Set(tasks.flatMap((task) => getValues(task)))).sort((a, b) => a.localeCompare(b));
 }
 
-function filterTasks(tasks: TranscodeTask[], query: string, completion: string, codecFilters: string[], subtitleFilters: string[]) {
+function filterTasks(tasks: TranscodeTask[], query: string, completion: string, codecFilters: CodecFilters, subtitleFilters: string[]) {
   return tasks.filter((task) => {
     if (!taskMatchesQuery(task, query)) return false;
     if (completion === "complete" && task.state !== "complete") return false;
     if (completion === "incomplete" && task.state === "complete") return false;
     const codecs = taskCodecs(task);
-    if (codecFilters.length && !codecFilters.some((codec) => codecs.includes(codec))) return false;
+    if (!taskMatchesCodecFilters(codecs, codecFilters)) return false;
     const subtitles = taskSubtitleLanguages(task);
     if (subtitleFilters.length && !subtitleFilters.some((language) => subtitles.includes(language))) return false;
     return true;
   });
+}
+
+function hasCodecFilters(filters: CodecFilters) {
+  return Object.keys(filters).length > 0;
+}
+
+function codecFiltersByState(filters: CodecFilters, state: CodecFilterState) {
+  return Object.entries(filters)
+    .filter(([, value]) => value === state)
+    .map(([codec]) => codec);
+}
+
+function taskMatchesCodecFilters(codecs: string[], filters: CodecFilters) {
+  const included = codecFiltersByState(filters, "include");
+  const excluded = codecFiltersByState(filters, "exclude");
+  if (included.length && !included.some((codec) => codecs.includes(codec))) return false;
+  if (excluded.some((codec) => codecs.includes(codec))) return false;
+  return true;
+}
+
+function nextCodecFilters(filters: CodecFilters, codec: string) {
+  const current = filters[codec];
+  const next = { ...filters };
+  if (!current) {
+    next[codec] = "include";
+  } else if (current === "include") {
+    next[codec] = "exclude";
+  } else {
+    delete next[codec];
+  }
+  return next;
+}
+
+function triStateFilterTip(codec: string, state?: CodecFilterState) {
+  if (state === "include") return `${codec} included. Click to exclude it.`;
+  if (state === "exclude") return `${codec} excluded. Click to make it neutral.`;
+  return `${codec} neutral. Click to include it.`;
 }
 
 function taskMatchesQuery(task: TranscodeTask, query: string) {
