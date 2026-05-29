@@ -93,6 +93,7 @@ export type TranscodeTask = {
   input: string;
   outputDir: string;
   state: string;
+  running?: boolean;
   error?: string;
   params: TaskParams;
   createdAt: string;

@@ -53,6 +53,7 @@ func (s *Store) List(filter ListFilter) ([]Task, error) {
 	s.cacheMu.RLock()
 	cached := cloneTasks(s.cache)
 	s.cacheMu.RUnlock()
+	s.markRunning(cached)
 	if filter.State == "" {
 		return cached, nil
 	}
@@ -131,7 +132,14 @@ func (s *Store) scanOutput(ctx context.Context) ([]Task, error) {
 }
 
 func (s *Store) Read(id string) (*Task, error) {
-	return s.read(id, true)
+	task, err := s.read(id, true)
+	if err != nil {
+		return nil, err
+	}
+	tasks := []Task{*task}
+	s.markRunning(tasks)
+	*task = tasks[0]
+	return task, nil
 }
 
 func (s *Store) read(id string, includeFiles bool) (*Task, error) {
@@ -525,6 +533,14 @@ func cloneTasks(tasks []Task) []Task {
 	out := make([]Task, len(tasks))
 	copy(out, tasks)
 	return out
+}
+
+func (s *Store) markRunning(tasks []Task) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range tasks {
+		tasks[i].Running = s.cancels[tasks[i].ID] != nil
+	}
 }
 
 func compactTasks(tasks []Task) []Task {

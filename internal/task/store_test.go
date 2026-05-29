@@ -259,6 +259,48 @@ func TestWorkerUpdatesListCacheAfterRun(t *testing.T) {
 	}
 }
 
+func TestListAndReadMarkActivelyRunningTask(t *testing.T) {
+	output := t.TempDir()
+	taskDir := filepath.Join(output, "abc12")
+	if err := os.MkdirAll(taskDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task := &Task{
+		ID:        "abc12",
+		Input:     "movie.mkv",
+		OutputDir: taskDir,
+		State:     StateIncomplete,
+		Params:    Params{},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := writeTask(task); err != nil {
+		t.Fatal(err)
+	}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &Store{
+		cfg:     &config.Config{Output: output},
+		cancels: map[string]context.CancelFunc{task.ID: cancel},
+		cache:   []Task{compactTask(*task)},
+	}
+	tasks, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || !tasks[0].Running {
+		t.Fatalf("List running = %+v, want active task marked running", tasks)
+	}
+	got, err := store.Read(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Running {
+		t.Fatalf("Read running = false, want true")
+	}
+}
+
 func TestValidateTaskIDRejectsTraversal(t *testing.T) {
 	for _, id := range []string{"", ".", "..", "../escape", "nested/id", `nested\id`} {
 		if err := validateTaskID(id); err == nil {

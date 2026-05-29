@@ -65,8 +65,10 @@ type LoadState = {
 
 type MediaTaskIndex = Map<string, TranscodeTask>;
 type QueueMode = "replace" | "incomplete";
-type CodecFilterState = "include" | "exclude";
-type CodecFilters = Record<string, CodecFilterState>;
+type TriStateFilterState = "include" | "exclude";
+type TriStateFilters = Record<string, TriStateFilterState>;
+
+const IN_PROGRESS_FILTER = "In Progress";
 
 type TaskSelection = {
   title: string;
@@ -104,7 +106,8 @@ export function Dashboard() {
   const [taskLimit, setTaskLimit] = React.useState(100);
   const [taskQuery, setTaskQuery] = React.useState("");
   const [taskCompletion, setTaskCompletion] = React.useState("all");
-  const [codecFilters, setCodecFilters] = React.useState<CodecFilters>({});
+  const [taskStatusFilters, setTaskStatusFilters] = React.useState<TriStateFilters>({});
+  const [codecFilters, setCodecFilters] = React.useState<TriStateFilters>({});
   const [subtitleFilters, setSubtitleFilters] = React.useState<string[]>([]);
   const [deleteFilteredOpen, setDeleteFilteredOpen] = React.useState(false);
   const [taskRefreshing, setTaskRefreshing] = React.useState(false);
@@ -228,8 +231,8 @@ export function Dashboard() {
   const taskCodecOptions = React.useMemo(() => taskOptions(state.tasks, taskCodecs), [state.tasks]);
   const taskSubtitleOptions = React.useMemo(() => taskOptions(state.tasks, taskSubtitleLanguages), [state.tasks]);
   const filteredTasks = React.useMemo(
-    () => filterTasks(state.tasks, taskQuery, taskCompletion, codecFilters, subtitleFilters),
-    [codecFilters, state.tasks, subtitleFilters, taskCompletion, taskQuery]
+    () => filterTasks(state.tasks, taskQuery, taskCompletion, taskStatusFilters, codecFilters, subtitleFilters),
+    [codecFilters, state.tasks, subtitleFilters, taskCompletion, taskQuery, taskStatusFilters]
   );
   const visibleTasks = React.useMemo(() => filteredTasks.slice(0, taskLimit), [filteredTasks, taskLimit]);
   const deletableFilteredTasks = React.useMemo(() => filteredTasks.filter(canDeleteTask), [filteredTasks]);
@@ -241,7 +244,7 @@ export function Dashboard() {
 
   React.useEffect(() => {
     setTaskLimit(100);
-  }, [codecFilters, subtitleFilters, taskCompletion, taskQuery]);
+  }, [codecFilters, subtitleFilters, taskCompletion, taskQuery, taskStatusFilters]);
 
   const startScan = async (force: boolean) => {
     setBusy(true);
@@ -285,7 +288,7 @@ export function Dashboard() {
       const existingTasks = plan.existingTasks;
       const runningTasks = plan.runningTasks;
       if (runningTasks.length) {
-        setError(`${runningTasks.length.toLocaleString()} existing task${runningTasks.length === 1 ? " is" : "s are"} running and cannot be deleted yet. Cancel or wait for ${runningTasks.length === 1 ? "it" : "them"} before queueing replacements.`);
+        setError(`${runningTasks.length.toLocaleString()} existing task${runningTasks.length === 1 ? " is" : "s are"} in progress and cannot be deleted yet. Cancel or wait for ${runningTasks.length === 1 ? "it" : "them"} before queueing replacements.`);
         return;
       }
 
@@ -435,7 +438,7 @@ export function Dashboard() {
 
           <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Stat icon={HardDrive} label="Media" value={state.media.length.toLocaleString()} detail={`${filtered.length.toLocaleString()} visible`} />
-            <Stat icon={ListVideo} label="Tasks" value={state.tasks.length.toLocaleString()} detail={`${countByState(state.tasks, "running")} running`} />
+            <Stat icon={ListVideo} label="Tasks" value={state.tasks.length.toLocaleString()} detail={`${countInProgressTasks(state.tasks)} in progress`} />
             <Stat icon={BadgeCheck} label="Complete" value={countByState(state.tasks, "complete").toLocaleString()} detail={`${countByState(state.tasks, "failed")} failed`} />
             <Stat icon={Gauge} label="Scan" value={state.scan?.running ? "Running" : "Idle"} detail={scanDetail(state.scan)} />
           </section>
@@ -480,6 +483,8 @@ export function Dashboard() {
                 onQueryChange={setTaskQuery}
                 completion={taskCompletion}
                 onCompletionChange={setTaskCompletion}
+                taskStatusFilters={taskStatusFilters}
+                onTaskStatusFiltersChange={setTaskStatusFilters}
                 codecOptions={taskCodecOptions}
                 codecFilters={codecFilters}
                 onCodecFiltersChange={setCodecFilters}
@@ -637,6 +642,8 @@ function TaskToolbar({
   onQueryChange,
   completion,
   onCompletionChange,
+  taskStatusFilters,
+  onTaskStatusFiltersChange,
   codecOptions,
   codecFilters,
   onCodecFiltersChange,
@@ -656,9 +663,11 @@ function TaskToolbar({
   onQueryChange: (value: string) => void;
   completion: string;
   onCompletionChange: (value: string) => void;
+  taskStatusFilters: TriStateFilters;
+  onTaskStatusFiltersChange: (value: TriStateFilters) => void;
   codecOptions: string[];
-  codecFilters: CodecFilters;
-  onCodecFiltersChange: (value: CodecFilters) => void;
+  codecFilters: TriStateFilters;
+  onCodecFiltersChange: (value: TriStateFilters) => void;
   subtitleOptions: string[];
   subtitleFilters: string[];
   onSubtitleFiltersChange: (value: string[]) => void;
@@ -671,7 +680,7 @@ function TaskToolbar({
   onDeleteFiltered: () => void;
   disabled: boolean;
 }) {
-  const hasFilters = query.trim() !== "" || completion !== "all" || hasCodecFilters(codecFilters) || subtitleFilters.length > 0;
+  const hasFilters = query.trim() !== "" || completion !== "all" || hasTriStateFilters(taskStatusFilters) || hasTriStateFilters(codecFilters) || subtitleFilters.length > 0;
   return (
     <div className="mb-4 rounded-lg border bg-card/60 p-3">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -693,6 +702,7 @@ function TaskToolbar({
                   onClick={() => {
                     onQueryChange("");
                     onCompletionChange("all");
+                    onTaskStatusFiltersChange({});
                     onCodecFiltersChange({});
                     onSubtitleFiltersChange([]);
                   }}
@@ -712,7 +722,7 @@ function TaskToolbar({
               placeholder="Search task, file, path, state, codec, subtitle"
             />
           </div>
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)_minmax(0,1fr)]">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,220px)_minmax(0,220px)_minmax(0,1fr)_minmax(0,1fr)]">
             <div>
               <div className="mb-1 text-xs font-medium text-muted-foreground">Completion</div>
               <div className="flex flex-wrap gap-2">
@@ -734,6 +744,13 @@ function TaskToolbar({
                 ))}
               </div>
             </div>
+            <TriStateFilterGroup
+              title="Task Status"
+              options={[IN_PROGRESS_FILTER]}
+              filters={taskStatusFilters}
+              onChange={onTaskStatusFiltersChange}
+              emptyLabel="No task status options"
+            />
             <TriStateFilterGroup title="Encoded codecs" options={codecOptions} filters={codecFilters} onChange={onCodecFiltersChange} emptyLabel="No encoded codecs yet" />
             <FilterGroup
               title="Subtitle languages"
@@ -813,8 +830,8 @@ function TriStateFilterGroup({
 }: {
   title: string;
   options: string[];
-  filters: CodecFilters;
-  onChange: (value: CodecFilters) => void;
+  filters: TriStateFilters;
+  onChange: (value: TriStateFilters) => void;
   emptyLabel: string;
 }) {
   return (
@@ -831,7 +848,7 @@ function TriStateFilterGroup({
                   variant={state === "include" ? "default" : "outline"}
                   size="sm"
                   className={cn("h-7 max-w-full px-2", state === "exclude" && "border-destructive/60 text-destructive hover:bg-destructive/10 hover:text-destructive")}
-                  onClick={() => onChange(nextCodecFilters(filters, option))}
+                  onClick={() => onChange(nextTriStateFilters(filters, option))}
                 >
                   {state === "include" ? <CheckCircle2 /> : state === "exclude" ? <Ban /> : null}
                   <span className="truncate">{option}</span>
@@ -1074,6 +1091,7 @@ function MediaBadges({ item }: { item: MediaItem }) {
 function MediaTaskIndicator({ task }: { task?: TranscodeTask }) {
   if (!task) return <div className="mt-2 min-h-6" aria-hidden="true" />;
   const complete = task.state === "complete";
+  const inProgress = isInProgressTask(task);
   return (
     <Tip content={`Task ${task.id} is ${task.state}`}>
       <div className="mt-2 flex min-h-6 min-w-0 flex-wrap items-center gap-1.5">
@@ -1082,8 +1100,8 @@ function MediaTaskIndicator({ task }: { task?: TranscodeTask }) {
           In task
         </Badge>
         <Badge variant={complete ? "default" : "warning"} className="shrink-0">
-          {complete ? <CheckCircle2 className="mr-1 size-3" /> : <CircleAlert className="mr-1 size-3" />}
-          {complete ? "Complete" : "Incomplete"}
+          {complete ? <CheckCircle2 className="mr-1 size-3" /> : inProgress ? <Loader2 className="mr-1 size-3 animate-spin" /> : <CircleAlert className="mr-1 size-3" />}
+          {complete ? "Complete" : inProgress ? "In progress" : "Incomplete"}
         </Badge>
       </div>
     </Tip>
@@ -1125,8 +1143,8 @@ function TaskView({
                     <p className="truncate text-xs text-muted-foreground">{task.outputDir}</p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 md:justify-end">
-                    {task.state === "running" || task.state === "queued" ? (
-                      <Tip content="Cancel this queued or running task">
+                    {isInProgressTask(task) ? (
+                      <Tip content="Cancel this in-progress task">
                         <Button variant="destructive" size="sm" onClick={() => onCancel(task.id)}>
                           <Ban />
                           Cancel
@@ -1141,7 +1159,7 @@ function TaskView({
                         </Button>
                       </Tip>
                     ) : null}
-                    <Tip content={canDeleteTask(task) ? "Click once more to delete this task folder" : "Cancel running tasks before deleting"}>
+                    <Tip content={canDeleteTask(task) ? "Click once more to delete this task folder" : "Cancel in-progress tasks before deleting"}>
                       <Button
                         variant={confirmingDelete === task.id ? "destructive" : "outline"}
                         size="sm"
@@ -1231,7 +1249,7 @@ function DeleteFilteredDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-foreground">
-          This removes generated files and job metadata for the matching tasks. {skippedCount ? `${skippedCount.toLocaleString()} running task${skippedCount === 1 ? "" : "s"} will be skipped.` : "This cannot be undone."}
+          This removes generated files and job metadata for the matching tasks. {skippedCount ? `${skippedCount.toLocaleString()} in-progress task${skippedCount === 1 ? "" : "s"} will be skipped.` : "This cannot be undone."}
         </div>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
@@ -1486,6 +1504,10 @@ function countByState(tasks: TranscodeTask[], state: string) {
   return tasks.filter((task) => task.state === state).length;
 }
 
+function countInProgressTasks(tasks: TranscodeTask[]) {
+  return tasks.filter(isInProgressTask).length;
+}
+
 function buildMediaTaskIndex(tasks: TranscodeTask[]) {
   const index: MediaTaskIndex = new Map();
   const newestFirst = [...tasks].sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
@@ -1587,7 +1609,7 @@ function uniqueKeys(keys: string[]) {
 }
 
 function canDeleteTask(task: TranscodeTask) {
-  return task.state !== "running";
+  return !isInProgressTask(task);
 }
 
 function taskCodecs(task: TranscodeTask) {
@@ -1605,9 +1627,17 @@ function taskOptions(tasks: TranscodeTask[], getValues: (task: TranscodeTask) =>
   return Array.from(new Set(tasks.flatMap((task) => getValues(task)))).sort((a, b) => a.localeCompare(b));
 }
 
-function filterTasks(tasks: TranscodeTask[], query: string, completion: string, codecFilters: CodecFilters, subtitleFilters: string[]) {
+function filterTasks(
+  tasks: TranscodeTask[],
+  query: string,
+  completion: string,
+  taskStatusFilters: TriStateFilters,
+  codecFilters: TriStateFilters,
+  subtitleFilters: string[]
+) {
   return tasks.filter((task) => {
     if (!taskMatchesQuery(task, query)) return false;
+    if (!taskMatchesStatusFilters(task, taskStatusFilters)) return false;
     if (completion === "complete" && task.state !== "complete") return false;
     if (completion === "incomplete" && task.state === "complete") return false;
     const codecs = taskCodecs(task);
@@ -1618,41 +1648,54 @@ function filterTasks(tasks: TranscodeTask[], query: string, completion: string, 
   });
 }
 
-function hasCodecFilters(filters: CodecFilters) {
+function isInProgressTask(task: TranscodeTask) {
+  return task.state === "queued" || Boolean(task.running);
+}
+
+function hasTriStateFilters(filters: TriStateFilters) {
   return Object.keys(filters).length > 0;
 }
 
-function codecFiltersByState(filters: CodecFilters, state: CodecFilterState) {
+function triStateFiltersByState(filters: TriStateFilters, state: TriStateFilterState) {
   return Object.entries(filters)
     .filter(([, value]) => value === state)
-    .map(([codec]) => codec);
+    .map(([option]) => option);
 }
 
-function taskMatchesCodecFilters(codecs: string[], filters: CodecFilters) {
-  const included = codecFiltersByState(filters, "include");
-  const excluded = codecFiltersByState(filters, "exclude");
+function taskMatchesStatusFilters(task: TranscodeTask, filters: TriStateFilters) {
+  const included = triStateFiltersByState(filters, "include");
+  const excluded = triStateFiltersByState(filters, "exclude");
+  const inProgress = isInProgressTask(task);
+  if (included.includes(IN_PROGRESS_FILTER) && !inProgress) return false;
+  if (excluded.includes(IN_PROGRESS_FILTER) && inProgress) return false;
+  return true;
+}
+
+function taskMatchesCodecFilters(codecs: string[], filters: TriStateFilters) {
+  const included = triStateFiltersByState(filters, "include");
+  const excluded = triStateFiltersByState(filters, "exclude");
   if (included.length && !included.some((codec) => codecs.includes(codec))) return false;
   if (excluded.some((codec) => codecs.includes(codec))) return false;
   return true;
 }
 
-function nextCodecFilters(filters: CodecFilters, codec: string) {
-  const current = filters[codec];
+function nextTriStateFilters(filters: TriStateFilters, option: string) {
+  const current = filters[option];
   const next = { ...filters };
   if (!current) {
-    next[codec] = "include";
+    next[option] = "include";
   } else if (current === "include") {
-    next[codec] = "exclude";
+    next[option] = "exclude";
   } else {
-    delete next[codec];
+    delete next[option];
   }
   return next;
 }
 
-function triStateFilterTip(codec: string, state?: CodecFilterState) {
-  if (state === "include") return `${codec} included. Click to exclude it.`;
-  if (state === "exclude") return `${codec} excluded. Click to make it neutral.`;
-  return `${codec} neutral. Click to include it.`;
+function triStateFilterTip(option: string, state?: TriStateFilterState) {
+  if (state === "include") return `${option} included. Click to exclude it.`;
+  if (state === "exclude") return `${option} excluded. Click to make it neutral.`;
+  return `${option} neutral. Click to include it.`;
 }
 
 function taskMatchesQuery(task: TranscodeTask, query: string) {
@@ -1884,7 +1927,7 @@ function queueNoticeTitle(plan: QueuePlan, queueMode: QueueMode) {
 
 function queueConfirmationText(selection: TaskSelection, plan: QueuePlan, queueMode: QueueMode) {
   if (plan.runningTasks.length) {
-    return `${plan.runningTasks.length.toLocaleString()} existing task${plan.runningTasks.length === 1 ? " is" : "s are"} running and cannot be deleted yet. Cancel or wait for ${plan.runningTasks.length === 1 ? "it" : "them"} before queueing replacements.`;
+    return `${plan.runningTasks.length.toLocaleString()} existing task${plan.runningTasks.length === 1 ? " is" : "s are"} in progress and cannot be deleted yet. Cancel or wait for ${plan.runningTasks.length === 1 ? "it" : "them"} before queueing replacements.`;
   }
   if (!selection.bulk) {
     return "This media file is already in a task. Queueing it will delete the existing task output and job metadata before creating the replacement.";

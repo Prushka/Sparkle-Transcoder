@@ -39,6 +39,7 @@ type Task struct {
 	Input          string              `json:"input"`
 	OutputDir      string              `json:"outputDir"`
 	State          string              `json:"state"`
+	Running        bool                `json:"running,omitempty"`
 	Error          string              `json:"error,omitempty"`
 	Params         Params              `json:"params"`
 	CreatedAt      time.Time           `json:"createdAt"`
