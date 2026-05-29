@@ -64,12 +64,23 @@ type LoadState = {
 };
 
 type MediaTaskIndex = Map<string, TranscodeTask>;
+type QueueMode = "replace" | "incomplete";
 
 type TaskSelection = {
   title: string;
   description: string;
   items: MediaItem[];
   existingTasks: TranscodeTask[];
+  bulk: boolean;
+};
+
+type QueuePlan = {
+  items: MediaItem[];
+  existingTasks: TranscodeTask[];
+  runningTasks: TranscodeTask[];
+  skippedCompleteItems: MediaItem[];
+  incompleteItems: MediaItem[];
+  nonExistingItems: MediaItem[];
 };
 
 const initialState: LoadState = {
@@ -89,6 +100,7 @@ export function Dashboard() {
   const [error, setError] = React.useState("");
   const [mediaLimit, setMediaLimit] = React.useState(150);
   const [taskLimit, setTaskLimit] = React.useState(100);
+  const [taskQuery, setTaskQuery] = React.useState("");
   const [taskCompletion, setTaskCompletion] = React.useState("all");
   const [codecFilters, setCodecFilters] = React.useState<string[]>([]);
   const [subtitleFilters, setSubtitleFilters] = React.useState<string[]>([]);
@@ -214,8 +226,8 @@ export function Dashboard() {
   const taskCodecOptions = React.useMemo(() => taskOptions(state.tasks, taskCodecs), [state.tasks]);
   const taskSubtitleOptions = React.useMemo(() => taskOptions(state.tasks, taskSubtitleLanguages), [state.tasks]);
   const filteredTasks = React.useMemo(
-    () => filterTasks(state.tasks, taskCompletion, codecFilters, subtitleFilters),
-    [codecFilters, state.tasks, subtitleFilters, taskCompletion]
+    () => filterTasks(state.tasks, taskQuery, taskCompletion, codecFilters, subtitleFilters),
+    [codecFilters, state.tasks, subtitleFilters, taskCompletion, taskQuery]
   );
   const visibleTasks = React.useMemo(() => filteredTasks.slice(0, taskLimit), [filteredTasks, taskLimit]);
   const deletableFilteredTasks = React.useMemo(() => filteredTasks.filter(canDeleteTask), [filteredTasks]);
@@ -227,7 +239,7 @@ export function Dashboard() {
 
   React.useEffect(() => {
     setTaskLimit(100);
-  }, [codecFilters, subtitleFilters, taskCompletion]);
+  }, [codecFilters, subtitleFilters, taskCompletion, taskQuery]);
 
   const startScan = async (force: boolean) => {
     setBusy(true);
@@ -245,7 +257,7 @@ export function Dashboard() {
     }
   };
 
-  const openTaskDialog = React.useCallback((items: MediaItem[], title?: string, description?: string) => {
+  const openTaskDialog = React.useCallback((items: MediaItem[], title?: string, description?: string, bulk = false) => {
     const selectedItems = uniqueMediaItems(items);
     if (!selectedItems.length) return;
     const first = selectedItems[0];
@@ -253,17 +265,23 @@ export function Dashboard() {
       title: title ?? first.title,
       description: description ?? first.fileName,
       items: selectedItems,
-      existingTasks: existingTasksForMedia(selectedItems, state.tasks)
+      existingTasks: existingTasksForMedia(selectedItems, state.tasks),
+      bulk
     });
   }, [state.tasks]);
 
-  const createTasks = async (selection: TaskSelection, params: TaskParams) => {
-    const selectedItems = uniqueMediaItems(selection.items);
-    if (!selectedItems.length) return;
+  const createTasks = async (selection: TaskSelection, params: TaskParams, queueMode: QueueMode) => {
+    const plan = buildQueuePlan(selection.items, state.tasks, selection.bulk ? queueMode : "replace");
+    if (!plan.items.length) {
+      setSelected(null);
+      setError(plan.skippedCompleteItems.length ? `No tasks queued. ${plan.skippedCompleteItems.length.toLocaleString()} complete ${selectionMediaLabel(selection.items, plan.skippedCompleteItems.length)} skipped.` : "");
+      return;
+    }
     setBusy(true);
     try {
-      const existingTasks = existingTasksForMedia(selectedItems, state.tasks);
-      const runningTasks = existingTasks.filter((task) => !canDeleteTask(task));
+      const selectedItems = plan.items;
+      const existingTasks = plan.existingTasks;
+      const runningTasks = plan.runningTasks;
       if (runningTasks.length) {
         setError(`${runningTasks.length.toLocaleString()} existing task${runningTasks.length === 1 ? " is" : "s are"} running and cannot be deleted yet. Cancel or wait for ${runningTasks.length === 1 ? "it" : "them"} before queueing replacements.`);
         return;
@@ -305,7 +323,10 @@ export function Dashboard() {
       if (created.length) {
         setActiveTab("tasks");
       }
-      setError(failures.length ? `${created.length.toLocaleString()} queued, ${failures.length.toLocaleString()} failed. ${failures[0]}` : "");
+      const skippedText = plan.skippedCompleteItems.length
+        ? ` ${plan.skippedCompleteItems.length.toLocaleString()} complete ${selectionMediaLabel(selection.items, plan.skippedCompleteItems.length)} skipped.`
+        : "";
+      setError(failures.length ? `${created.length.toLocaleString()} queued, ${failures.length.toLocaleString()} failed.${skippedText} ${failures[0]}` : skippedText.trim());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Task creation failed");
     } finally {
@@ -453,6 +474,8 @@ export function Dashboard() {
             </TabsContent>
             <TabsContent value="tasks">
               <TaskToolbar
+                query={taskQuery}
+                onQueryChange={setTaskQuery}
                 completion={taskCompletion}
                 onCompletionChange={setTaskCompletion}
                 codecOptions={taskCodecOptions}
@@ -608,6 +631,8 @@ function ToolReadinessSection({ tools }: { tools: ToolReadiness[] }) {
 }
 
 function TaskToolbar({
+  query,
+  onQueryChange,
   completion,
   onCompletionChange,
   codecOptions,
@@ -625,6 +650,8 @@ function TaskToolbar({
   onDeleteFiltered,
   disabled
 }: {
+  query: string;
+  onQueryChange: (value: string) => void;
   completion: string;
   onCompletionChange: (value: string) => void;
   codecOptions: string[];
@@ -642,7 +669,7 @@ function TaskToolbar({
   onDeleteFiltered: () => void;
   disabled: boolean;
 }) {
-  const hasFilters = completion !== "all" || codecFilters.length > 0 || subtitleFilters.length > 0;
+  const hasFilters = query.trim() !== "" || completion !== "all" || codecFilters.length > 0 || subtitleFilters.length > 0;
   return (
     <div className="mb-4 rounded-lg border bg-card/60 p-3">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -662,6 +689,7 @@ function TaskToolbar({
                   size="sm"
                   className="h-7 px-2"
                   onClick={() => {
+                    onQueryChange("");
                     onCompletionChange("all");
                     onCodecFiltersChange([]);
                     onSubtitleFiltersChange([]);
@@ -672,6 +700,15 @@ function TaskToolbar({
                 </Button>
               </Tip>
             ) : null}
+          </div>
+          <div className="relative mb-3 max-w-xl">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              className="pl-9"
+              placeholder="Search task, file, path, state, codec, subtitle"
+            />
           </div>
           <div className="grid gap-3 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)_minmax(0,1fr)]">
             <div>
@@ -774,7 +811,7 @@ function LibraryView({
   items: MediaItem[];
   queueItems: MediaItem[];
   taskIndex: MediaTaskIndex;
-  onTranscode: (items: MediaItem[], title?: string, description?: string) => void;
+  onTranscode: (items: MediaItem[], title?: string, description?: string, bulk?: boolean) => void;
 }) {
   const movies = items.filter((item) => item.kind === "movie");
   const shows = groupEpisodes(items.filter((item) => item.kind === "episode"));
@@ -804,7 +841,7 @@ function LibraryView({
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => onTranscode(showItems, show.name, showSelectionDescription(show.name, showItems))}
+                  onClick={() => onTranscode(showItems, show.name, showSelectionDescription(show.name, showItems), true)}
                   disabled={!showItems.length}
                 >
                   <Play />
@@ -831,7 +868,8 @@ function LibraryView({
                             onTranscode(
                               seasonItems,
                               `${show.name} / Season ${season.number}`,
-                              selectionCountDescription(seasonItems.length, "episode")
+                              selectionCountDescription(seasonItems.length, "episode"),
+                              true
                             )
                           }
                           disabled={!seasonItems.length}
@@ -1175,7 +1213,7 @@ function TaskDialog({
   config?: PublicConfig;
   busy: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (selection: TaskSelection, params: TaskParams) => void;
+  onCreate: (selection: TaskSelection, params: TaskParams, queueMode: QueueMode) => void;
 }) {
   const [fast, setFast] = React.useState(false);
   const [enableEncode, setEnableEncode] = React.useState(true);
@@ -1184,6 +1222,7 @@ function TaskDialog({
   const [encoders, setEncoders] = React.useState<string[]>(["hevc"]);
   const [quality, setQuality] = React.useState(18);
   const [audioKbps, setAudioKbps] = React.useState(144);
+  const [queueMode, setQueueMode] = React.useState<QueueMode>("replace");
 
   React.useEffect(() => {
     if (!config) return;
@@ -1194,11 +1233,16 @@ function TaskDialog({
     setAudioKbps(config.audioKbps || 144);
   }, [config, selection?.items[0]?.id]);
 
+  React.useEffect(() => {
+    setQueueMode("replace");
+  }, [selection?.items[0]?.id]);
+
   const allEncoders = ["hevc", "av1", "h264-10bit", "h264-8bit"];
-  const selectedCount = selection?.items.length ?? 0;
-  const existingTaskCount = selection?.existingTasks.length ?? 0;
-  const runningExistingTaskCount = selection?.existingTasks.filter((task) => !canDeleteTask(task)).length ?? 0;
-  const blocksReplacement = runningExistingTaskCount > 0;
+  const effectiveQueueMode = selection?.bulk ? queueMode : "replace";
+  const queuePlan = selection ? buildQueuePlan(selection.items, selection.existingTasks, effectiveQueueMode) : emptyQueuePlan();
+  const existingTaskCount = queuePlan.existingTasks.length;
+  const blocksReplacement = queuePlan.runningTasks.length > 0;
+  const queueCount = queuePlan.items.length;
   const submit = () => {
     if (!selection) return;
     onCreate(selection, {
@@ -1210,7 +1254,7 @@ function TaskDialog({
       quality: String(quality),
       audioKbps,
       videoExt: config?.videoExt ?? "mp4"
-    });
+    }, effectiveQueueMode);
   };
 
   return (
@@ -1221,6 +1265,25 @@ function TaskDialog({
           <DialogDescription>{selection?.description}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-4">
+          {selection?.bulk ? (
+            <div>
+              <div className="mb-2 text-sm font-medium">Queue mode</div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Tip content="Delete matching task output and queue every selected episode again">
+                  <Button type="button" variant={queueMode === "replace" ? "default" : "outline"} onClick={() => setQueueMode("replace")}>
+                    <Trash2 />
+                    Replace
+                  </Button>
+                </Tip>
+                <Tip content="Skip media that already has a complete task and queue only missing or incomplete media">
+                  <Button type="button" variant={queueMode === "incomplete" ? "default" : "outline"} onClick={() => setQueueMode("incomplete")}>
+                    <ListVideo />
+                    Incomplete or missing
+                  </Button>
+                </Tip>
+              </div>
+            </div>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-2">
             <ToggleLine label="Fast path" checked={fast} onCheckedChange={setFast} tip="Copy video and repackage audio through ffmpeg">
               <Gauge className="size-4 text-primary" />
@@ -1262,13 +1325,13 @@ function TaskDialog({
             <LabeledSlider label={`Quality ${quality}`} value={quality} min={12} max={30} step={1} onChange={setQuality} tip="HandBrake constant quality value" />
             <LabeledSlider label={`Audio ${audioKbps} kbps`} value={audioKbps} min={96} max={320} step={8} onChange={setAudioKbps} tip="Opus audio bitrate per output" />
           </div>
-          {selection && existingTaskCount ? (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-foreground">
+          {selection && (selection.bulk || existingTaskCount) ? (
+            <div className={cn("rounded-lg border p-3 text-sm text-foreground", existingTaskCount || blocksReplacement ? "border-destructive/30 bg-destructive/10" : "bg-card/60")}>
               <div className="mb-1 flex items-center gap-2 font-medium">
-                <Trash2 className="size-4 text-destructive" />
-                {blocksReplacement ? "Existing task output cannot be removed yet" : "Existing task output will be removed"}
+                {queueNoticeIcon(queuePlan, effectiveQueueMode)}
+                {queueNoticeTitle(queuePlan, effectiveQueueMode)}
               </div>
-              <p className="text-muted-foreground">{replacementConfirmationText(selection)}</p>
+              <p className="text-muted-foreground">{queueConfirmationText(selection, queuePlan, effectiveQueueMode)}</p>
             </div>
           ) : null}
         </div>
@@ -1277,9 +1340,9 @@ function TaskDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={busy || blocksReplacement || (!fast && !encoders.length)}>
+          <Button onClick={submit} disabled={busy || blocksReplacement || queueCount === 0 || (!fast && !encoders.length)}>
             {busy ? <Loader2 className="animate-spin" /> : <Play />}
-            Queue {selectedCount === 1 ? "task" : `${selectedCount.toLocaleString()} tasks`}
+            Queue {queueCount === 1 ? "task" : `${queueCount.toLocaleString()} tasks`}
           </Button>
         </div>
       </DialogContent>
@@ -1497,8 +1560,9 @@ function taskOptions(tasks: TranscodeTask[], getValues: (task: TranscodeTask) =>
   return Array.from(new Set(tasks.flatMap((task) => getValues(task)))).sort((a, b) => a.localeCompare(b));
 }
 
-function filterTasks(tasks: TranscodeTask[], completion: string, codecFilters: string[], subtitleFilters: string[]) {
+function filterTasks(tasks: TranscodeTask[], query: string, completion: string, codecFilters: string[], subtitleFilters: string[]) {
   return tasks.filter((task) => {
+    if (!taskMatchesQuery(task, query)) return false;
     if (completion === "complete" && task.state !== "complete") return false;
     if (completion === "incomplete" && task.state === "complete") return false;
     const codecs = taskCodecs(task);
@@ -1507,6 +1571,30 @@ function filterTasks(tasks: TranscodeTask[], completion: string, codecFilters: s
     if (subtitleFilters.length && !subtitleFilters.some((language) => subtitles.includes(language))) return false;
     return true;
   });
+}
+
+function taskMatchesQuery(task: TranscodeTask, query: string) {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const haystack = [
+    task.id,
+    task.mediaId,
+    task.input,
+    task.inputPath,
+    task.inputRelPath,
+    task.inputParent,
+    task.outputDir,
+    task.state,
+    task.error,
+    task.encodedCodecs?.join(" "),
+    taskSubtitleLanguages(task).join(" "),
+    task.streams?.map((stream) => `${stream.codecType ?? ""} ${stream.codecName ?? ""} ${stream.language ?? ""} ${stream.location ?? ""}`).join(" "),
+    task.files ? Object.keys(task.files).join(" ") : ""
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return terms.every((term) => haystack.includes(term));
 }
 
 function kindLabel(value: string) {
@@ -1598,10 +1686,52 @@ function uniqueTasks(tasks: TranscodeTask[]) {
   return unique;
 }
 
+function emptyQueuePlan(): QueuePlan {
+  return {
+    items: [],
+    existingTasks: [],
+    runningTasks: [],
+    skippedCompleteItems: [],
+    incompleteItems: [],
+    nonExistingItems: []
+  };
+}
+
+function buildQueuePlan(items: MediaItem[], tasks: TranscodeTask[], queueMode: QueueMode): QueuePlan {
+  const plan = emptyQueuePlan();
+  const selectedItems = uniqueMediaItems(items);
+  for (const item of selectedItems) {
+    const itemTasks = tasksForReplacementMedia(item, tasks);
+    const hasCompleteTask = itemTasks.some(isCompleteTask);
+    if (queueMode === "incomplete" && hasCompleteTask) {
+      plan.skippedCompleteItems.push(item);
+      continue;
+    }
+
+    plan.items.push(item);
+    if (itemTasks.length) {
+      plan.incompleteItems.push(item);
+      plan.existingTasks.push(...itemTasks);
+    } else {
+      plan.nonExistingItems.push(item);
+    }
+  }
+  plan.existingTasks = uniqueTasks(plan.existingTasks);
+  plan.runningTasks = plan.existingTasks.filter((task) => !canDeleteTask(task));
+  return plan;
+}
+
 function existingTasksForMedia(items: MediaItem[], tasks: TranscodeTask[]) {
-  const selectedKeys = new Set(uniqueMediaItems(items).flatMap(replacementMediaKeys));
-  if (!selectedKeys.size) return [];
+  return uniqueTasks(uniqueMediaItems(items).flatMap((item) => tasksForReplacementMedia(item, tasks)));
+}
+
+function tasksForReplacementMedia(item: MediaItem, tasks: TranscodeTask[]) {
+  const selectedKeys = new Set(replacementMediaKeys(item));
   return uniqueTasks(tasks.filter((task) => replacementTaskKeys(task).some((key) => selectedKeys.has(key))));
+}
+
+function isCompleteTask(task: TranscodeTask) {
+  return task.state === "complete";
 }
 
 function replacementMediaKeys(item: MediaItem) {
@@ -1656,22 +1786,60 @@ function showSelectionDescription(showName: string, items: MediaItem[]) {
   return `${selectionCountDescription(items.length, "episode")} from ${showName} across ${seasonCount.toLocaleString()} ${seasonLabel}`;
 }
 
-function replacementConfirmationText(selection: TaskSelection) {
-  const existingCount = selection.existingTasks.length;
-  const runningCount = selection.existingTasks.filter((task) => !canDeleteTask(task)).length;
-  if (runningCount) {
-    return `${runningCount.toLocaleString()} existing task${runningCount === 1 ? " is" : "s are"} running and cannot be deleted yet. Cancel or wait for ${runningCount === 1 ? "it" : "them"} before queueing replacements.`;
-  }
-  if (selection.items.length === 1) {
-    return "This media file is already in a task. Queueing it will delete the existing task output and job metadata before creating the replacement.";
-  }
-  return `${existingCount.toLocaleString()} of ${selection.items.length.toLocaleString()} selected ${selectionMediaLabel(selection.items)} already ${existingCount === 1 ? "has" : "have"} tasks. Queueing will delete those existing task outputs and job metadata before creating replacements.`;
+function queueNoticeIcon(plan: QueuePlan, queueMode: QueueMode) {
+  if (plan.runningTasks.length) return <CircleAlert className="size-4 text-destructive" />;
+  if (plan.existingTasks.length) return <Trash2 className="size-4 text-destructive" />;
+  if (queueMode === "incomplete" && plan.skippedCompleteItems.length) return <CheckCircle2 className="size-4 text-primary" />;
+  return <ListVideo className="size-4 text-primary" />;
 }
 
-function selectionMediaLabel(items: MediaItem[]) {
-  if (items.every((item) => item.kind === "episode")) return "episodes";
-  if (items.every((item) => item.kind === "movie")) return "movies";
-  return "media files";
+function queueNoticeTitle(plan: QueuePlan, queueMode: QueueMode) {
+  if (plan.runningTasks.length) return "Existing task output cannot be removed yet";
+  if (plan.existingTasks.length) return "Existing task output will be removed";
+  if (queueMode === "incomplete" && plan.skippedCompleteItems.length) return "Completed media will be skipped";
+  return "Ready to queue";
+}
+
+function queueConfirmationText(selection: TaskSelection, plan: QueuePlan, queueMode: QueueMode) {
+  if (plan.runningTasks.length) {
+    return `${plan.runningTasks.length.toLocaleString()} existing task${plan.runningTasks.length === 1 ? " is" : "s are"} running and cannot be deleted yet. Cancel or wait for ${plan.runningTasks.length === 1 ? "it" : "them"} before queueing replacements.`;
+  }
+  if (!selection.bulk) {
+    return "This media file is already in a task. Queueing it will delete the existing task output and job metadata before creating the replacement.";
+  }
+  if (queueMode === "replace") {
+    if (plan.existingTasks.length) {
+      return `${plan.existingTasks.length.toLocaleString()} existing task ${pluralize("folder", plan.existingTasks.length)} for selected ${selectionMediaLabel(selection.items)} will be deleted. All ${plan.items.length.toLocaleString()} selected ${selectionMediaLabel(selection.items, plan.items.length)} will be queued as replacements.`;
+    }
+    return `All ${plan.items.length.toLocaleString()} selected ${selectionMediaLabel(selection.items, plan.items.length)} will be queued. No existing task output matched this selection.`;
+  }
+  if (!plan.items.length) {
+    return `All ${selection.items.length.toLocaleString()} selected ${selectionMediaLabel(selection.items)} already have complete tasks, so nothing will be queued.`;
+  }
+
+  const parts = [
+    `${plan.items.length.toLocaleString()} of ${selection.items.length.toLocaleString()} selected ${selectionMediaLabel(selection.items)} will be queued.`
+  ];
+  if (plan.skippedCompleteItems.length) {
+    parts.push(`${plan.skippedCompleteItems.length.toLocaleString()} complete ${selectionMediaLabel(selection.items, plan.skippedCompleteItems.length)} will be skipped.`);
+  }
+  if (plan.existingTasks.length) {
+    parts.push(`${plan.existingTasks.length.toLocaleString()} existing incomplete task ${pluralize("folder", plan.existingTasks.length)} will be deleted before replacements are queued.`);
+  }
+  if (plan.nonExistingItems.length) {
+    parts.push(`${plan.nonExistingItems.length.toLocaleString()} ${selectionMediaLabel(selection.items, plan.nonExistingItems.length)} without tasks will be queued.`);
+  }
+  return parts.join(" ");
+}
+
+function pluralize(value: string, count: number) {
+  return count === 1 ? value : `${value}s`;
+}
+
+function selectionMediaLabel(items: MediaItem[], count = items.length) {
+  if (items.every((item) => item.kind === "episode")) return count === 1 ? "episode" : "episodes";
+  if (items.every((item) => item.kind === "movie")) return count === 1 ? "movie" : "movies";
+  return count === 1 ? "media file" : "media files";
 }
 
 function groupEpisodes(items: MediaItem[]) {
