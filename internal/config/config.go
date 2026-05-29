@@ -19,7 +19,7 @@ type Config struct {
 	ScanCacheFile    string        `env:"SCAN_CACHE_FILE" envDefault:""`
 	IncrementalScan  bool          `env:"SCAN_INCREMENTAL" envDefault:"true"`
 	ScanOnStartup    bool          `env:"SCAN_ON_STARTUP" envDefault:"true"`
-	ScanInterval     time.Duration `env:"SCAN_INPUT_INTERVAL" envDefault:"4h"`
+	ScanInterval     time.Duration `env:"SCAN_INPUT_INTERVAL" envDefault:"12h"`
 	MediaLibraries   []string      `env:"MEDIA_LIBRARIES" envDefault:"Anime,Anime-R,Movies,Movies-R,TV-Shows,TV-Shows-R,Public/input"`
 	MediaExcludeDirs []string      `env:"MEDIA_EXCLUDE_DIRS" envDefault:"Public/output,Public/temp,.Trashes,.Spotlight-V100,.fseventsd"`
 
