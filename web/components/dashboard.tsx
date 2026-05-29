@@ -4,9 +4,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   BadgeCheck,
   Ban,
+  CheckCircle2,
+  CircleAlert,
   Clapperboard,
   FileSearch,
   Film,
+  Filter,
   FolderSync,
   Gauge,
   HardDrive,
@@ -19,11 +22,24 @@ import {
   Settings2,
   Sparkles,
   Subtitles,
+  Trash2,
   Tv,
-  Video
+  Video,
+  Wrench,
+  X
 } from "lucide-react";
 import * as React from "react";
-import { api, outputUrl, posterUrl, type MediaItem, type PublicConfig, type ScanStatus, type TaskParams, type TranscodeTask } from "@/lib/api";
+import {
+  api,
+  outputUrl,
+  posterUrl,
+  type MediaItem,
+  type PublicConfig,
+  type ScanStatus,
+  type TaskParams,
+  type ToolReadiness,
+  type TranscodeTask
+} from "@/lib/api";
 import { cn, formatBytes, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,11 +57,13 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 type LoadState = {
   config?: PublicConfig;
   scan?: ScanStatus;
+  tools: ToolReadiness[];
   media: MediaItem[];
   tasks: TranscodeTask[];
 };
 
 const initialState: LoadState = {
+  tools: [],
   media: [],
   tasks: []
 };
@@ -61,12 +79,23 @@ export function Dashboard() {
   const [error, setError] = React.useState("");
   const [mediaLimit, setMediaLimit] = React.useState(150);
   const [taskLimit, setTaskLimit] = React.useState(100);
+  const [taskCompletion, setTaskCompletion] = React.useState("all");
+  const [codecFilters, setCodecFilters] = React.useState<string[]>([]);
+  const [subtitleFilters, setSubtitleFilters] = React.useState<string[]>([]);
+  const [deleteFilteredOpen, setDeleteFilteredOpen] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
     try {
-      const [config, mediaResponse, taskResponse, scan] = await Promise.all([api.config(), api.media(), api.tasks(), api.scanStatus()]);
+      const [config, mediaResponse, taskResponse, scan, toolsResponse] = await Promise.all([
+        api.config(),
+        api.media(),
+        api.tasks(),
+        api.scanStatus(),
+        api.tools()
+      ]);
       setState((current) => ({
         config,
+        tools: toolsResponse.tools,
         media: mediaResponse.items,
         tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
         scan
@@ -94,11 +123,22 @@ export function Dashboard() {
     });
   }, [kind, library, query, state.media]);
   const visibleMedia = React.useMemo(() => filtered.slice(0, mediaLimit), [filtered, mediaLimit]);
-  const visibleTasks = React.useMemo(() => state.tasks.slice(0, taskLimit), [state.tasks, taskLimit]);
+  const taskCodecOptions = React.useMemo(() => taskOptions(state.tasks, taskCodecs), [state.tasks]);
+  const taskSubtitleOptions = React.useMemo(() => taskOptions(state.tasks, taskSubtitleLanguages), [state.tasks]);
+  const filteredTasks = React.useMemo(
+    () => filterTasks(state.tasks, taskCompletion, codecFilters, subtitleFilters),
+    [codecFilters, state.tasks, subtitleFilters, taskCompletion]
+  );
+  const visibleTasks = React.useMemo(() => filteredTasks.slice(0, taskLimit), [filteredTasks, taskLimit]);
+  const deletableFilteredTasks = React.useMemo(() => filteredTasks.filter(canDeleteTask), [filteredTasks]);
 
   React.useEffect(() => {
     setMediaLimit(150);
   }, [kind, library, query]);
+
+  React.useEffect(() => {
+    setTaskLimit(100);
+  }, [codecFilters, subtitleFilters, taskCompletion]);
 
   const startScan = async (force: boolean) => {
     setBusy(true);
@@ -134,6 +174,44 @@ export function Dashboard() {
   const retryTask = async (id: string) => {
     await api.retryTask(id);
     await refresh();
+  };
+
+  const deleteTask = async (id: string) => {
+    setBusy(true);
+    try {
+      await api.deleteTask(id);
+      setState((current) => ({
+        ...current,
+        tasks: current.tasks.filter((task) => task.id !== id)
+      }));
+      await refresh();
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Task deletion failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteFilteredTasks = async () => {
+    const ids = deletableFilteredTasks.map((task) => task.id);
+    if (!ids.length) return;
+    setBusy(true);
+    try {
+      const result = await api.deleteTasks(ids);
+      const failedIds = new Set(result.failures.map((failure) => failure.id));
+      setState((current) => ({
+        ...current,
+        tasks: current.tasks.filter((task) => !ids.includes(task.id) || failedIds.has(task.id))
+      }));
+      setDeleteFilteredOpen(false);
+      await refresh();
+      setError(result.failures.length ? `${result.deleted} tasks deleted, ${result.failures.length} could not be deleted.` : "");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Filtered delete failed");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const loadTaskDetails = async (id: string) => {
@@ -191,6 +269,8 @@ export function Dashboard() {
             <Stat icon={Gauge} label="Scan" value={state.scan?.running ? "Running" : "Idle"} detail={scanDetail(state.scan)} />
           </section>
 
+          <ToolReadinessSection tools={state.tools} />
+
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList>
               <TabsTrigger value="library">
@@ -224,12 +304,27 @@ export function Dashboard() {
               ) : null}
             </TabsContent>
             <TabsContent value="tasks">
-              <TaskView tasks={visibleTasks} onCancel={cancelTask} onRetry={retryTask} onDetails={loadTaskDetails} />
-              {state.tasks.length > visibleTasks.length ? (
+              <TaskToolbar
+                completion={taskCompletion}
+                onCompletionChange={setTaskCompletion}
+                codecOptions={taskCodecOptions}
+                codecFilters={codecFilters}
+                onCodecFiltersChange={setCodecFilters}
+                subtitleOptions={taskSubtitleOptions}
+                subtitleFilters={subtitleFilters}
+                onSubtitleFiltersChange={setSubtitleFilters}
+                filteredCount={filteredTasks.length}
+                totalCount={state.tasks.length}
+                deletableCount={deletableFilteredTasks.length}
+                onDeleteFiltered={() => setDeleteFilteredOpen(true)}
+                disabled={busy}
+              />
+              <TaskView tasks={visibleTasks} busy={busy} onCancel={cancelTask} onRetry={retryTask} onDetails={loadTaskDetails} onDelete={deleteTask} />
+              {filteredTasks.length > visibleTasks.length ? (
                 <div className="mt-5 flex justify-center">
                   <Tip content="Render the next batch of tasks">
                     <Button variant="outline" onClick={() => setTaskLimit((value) => value + 100)}>
-                      Show {Math.min(100, state.tasks.length - visibleTasks.length).toLocaleString()} more
+                      Show {Math.min(100, filteredTasks.length - visibleTasks.length).toLocaleString()} more
                     </Button>
                   </Tip>
                 </div>
@@ -239,6 +334,15 @@ export function Dashboard() {
         </div>
       </main>
       <TaskDialog item={selected} config={state.config} busy={busy} onOpenChange={(open) => !open && setSelected(null)} onCreate={createTask} />
+      <DeleteFilteredDialog
+        open={deleteFilteredOpen}
+        totalCount={filteredTasks.length}
+        deletableCount={deletableFilteredTasks.length}
+        skippedCount={filteredTasks.length - deletableFilteredTasks.length}
+        busy={busy}
+        onOpenChange={setDeleteFilteredOpen}
+        onConfirm={deleteFilteredTasks}
+      />
     </TooltipProvider>
   );
 }
@@ -298,6 +402,199 @@ function LibraryToolbar({
           </Select>
         </div>
       </Tip>
+    </div>
+  );
+}
+
+function ToolReadinessSection({ tools }: { tools: ToolReadiness[] }) {
+  const readyCount = tools.filter((tool) => tool.ready).length;
+  return (
+    <section className="mb-5">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Wrench className="size-4 text-primary" />
+          <h2 className="text-sm font-semibold tracking-normal">Backend tools</h2>
+          <Badge variant={readyCount === tools.length && tools.length ? "default" : "warning"}>
+            {readyCount}/{tools.length || 3} ready
+          </Badge>
+        </div>
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        {(tools.length ? tools : ["ffmpeg", "ffprobe", "handbrake"]).map((tool) => {
+          const pending = typeof tool === "string";
+          const item = pending
+            ? ({ id: tool, name: tool, command: tool, ready: false, required: true } satisfies ToolReadiness)
+            : tool;
+          return (
+            <div key={item.id} className="min-w-0 rounded-lg border bg-card/60 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    {item.ready ? <CheckCircle2 className="size-4 shrink-0 text-primary" /> : <CircleAlert className="size-4 shrink-0 text-amber-300" />}
+                    <div className="truncate text-sm font-medium">{item.name}</div>
+                  </div>
+                  <div className="mt-1 truncate text-xs text-muted-foreground">{item.command}</div>
+                </div>
+                <Badge variant={item.ready ? "default" : "outline"}>{item.ready ? "Ready" : pending ? "Checking" : "Missing"}</Badge>
+              </div>
+              <div className="mt-3 min-h-8 text-xs text-muted-foreground">
+                {item.ready ? (
+                  <div className="truncate" title={item.version || item.path}>
+                    {item.version || item.path}
+                  </div>
+                ) : (
+                  <div className="line-clamp-2" title={item.error}>
+                    {pending ? "Waiting for backend status" : item.error || "Not available on backend PATH"}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function TaskToolbar({
+  completion,
+  onCompletionChange,
+  codecOptions,
+  codecFilters,
+  onCodecFiltersChange,
+  subtitleOptions,
+  subtitleFilters,
+  onSubtitleFiltersChange,
+  filteredCount,
+  totalCount,
+  deletableCount,
+  onDeleteFiltered,
+  disabled
+}: {
+  completion: string;
+  onCompletionChange: (value: string) => void;
+  codecOptions: string[];
+  codecFilters: string[];
+  onCodecFiltersChange: (value: string[]) => void;
+  subtitleOptions: string[];
+  subtitleFilters: string[];
+  onSubtitleFiltersChange: (value: string[]) => void;
+  filteredCount: number;
+  totalCount: number;
+  deletableCount: number;
+  onDeleteFiltered: () => void;
+  disabled: boolean;
+}) {
+  const hasFilters = completion !== "all" || codecFilters.length > 0 || subtitleFilters.length > 0;
+  return (
+    <div className="mb-4 rounded-lg border bg-card/60 p-3">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <Filter className="size-4 text-primary" />
+            <span className="text-sm font-medium">Task filters</span>
+            <Badge variant="outline">
+              {filteredCount.toLocaleString()} of {totalCount.toLocaleString()}
+            </Badge>
+            {hasFilters ? (
+              <Tip content="Clear task filters">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2"
+                  onClick={() => {
+                    onCompletionChange("all");
+                    onCodecFiltersChange([]);
+                    onSubtitleFiltersChange([]);
+                  }}
+                >
+                  <X />
+                  Clear
+                </Button>
+              </Tip>
+            ) : null}
+          </div>
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)_minmax(0,1fr)]">
+            <div>
+              <div className="mb-1 text-xs font-medium text-muted-foreground">Completion</div>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ["all", "All"],
+                  ["incomplete", "Incomplete"],
+                  ["complete", "Completed"]
+                ].map(([value, label]) => (
+                  <Button
+                    key={value}
+                    type="button"
+                    variant={completion === value ? "default" : "outline"}
+                    size="sm"
+                    className="h-7"
+                    onClick={() => onCompletionChange(value)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            <FilterGroup title="Encoded codecs" options={codecOptions} selected={codecFilters} onChange={onCodecFiltersChange} emptyLabel="No encoded codecs yet" />
+            <FilterGroup
+              title="Subtitle languages"
+              options={subtitleOptions}
+              selected={subtitleFilters}
+              onChange={onSubtitleFiltersChange}
+              emptyLabel="No subtitle languages yet"
+            />
+          </div>
+        </div>
+        <Tip content="Delete every deletable task matching the current filters">
+          <Button variant="destructive" onClick={onDeleteFiltered} disabled={disabled || deletableCount === 0} className="w-full shrink-0 xl:w-auto">
+            <Trash2 />
+            Delete filtered
+          </Button>
+        </Tip>
+      </div>
+    </div>
+  );
+}
+
+function FilterGroup({
+  title,
+  options,
+  selected,
+  onChange,
+  emptyLabel
+}: {
+  title: string;
+  options: string[];
+  selected: string[];
+  onChange: (value: string[]) => void;
+  emptyLabel: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-1 text-xs font-medium text-muted-foreground">{title}</div>
+      <div className="flex min-h-7 flex-wrap gap-2">
+        {options.length ? (
+          options.map((option) => {
+            const active = selected.includes(option);
+            return (
+              <Button
+                key={option}
+                type="button"
+                variant={active ? "default" : "outline"}
+                size="sm"
+                className="h-7 max-w-full px-2"
+                onClick={() => onChange(active ? selected.filter((value) => value !== option) : [...selected, option])}
+              >
+                <span className="truncate">{option}</span>
+              </Button>
+            );
+          })
+        ) : (
+          <span className="text-xs text-muted-foreground">{emptyLabel}</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -404,7 +701,7 @@ function EpisodeRow({ item, onTranscode }: { item: MediaItem; onTranscode: (item
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <h3 className="truncate text-sm font-semibold">
-                  {item.kind === "episode" ? `E${String(item.episode ?? 0).padStart(2, "0")} · ${item.title}` : item.title}
+                  {item.kind === "episode" ? `E${String(item.episode ?? 0).padStart(2, "0")} / ${item.title}` : item.title}
                 </h3>
                 <p className="mt-1 truncate text-xs text-muted-foreground">{item.library}</p>
               </div>
@@ -412,7 +709,7 @@ function EpisodeRow({ item, onTranscode }: { item: MediaItem; onTranscode: (item
             </div>
             <MetaLine item={item} />
             <div className="mt-2 flex items-center justify-between gap-2">
-              <span className="truncate text-xs text-muted-foreground">{item.ext.toUpperCase()} · {formatBytes(item.size)}</span>
+              <span className="truncate text-xs text-muted-foreground">{item.ext.toUpperCase()} / {formatBytes(item.size)}</span>
               <Tip content="Create a transcoding task for this episode">
                 <Button size="sm" variant="secondary" onClick={() => onTranscode(item)}>
                   <Play />
@@ -459,20 +756,26 @@ function MediaBadges({ item }: { item: MediaItem }) {
 
 function MetaLine({ item }: { item: MediaItem }) {
   const parts = [item.show, item.season ? `S${String(item.season).padStart(2, "0")}` : "", formatDate(item.modTime)].filter(Boolean);
-  return <p className="mt-2 truncate text-xs text-muted-foreground">{parts.join(" · ")}</p>;
+  return <p className="mt-2 truncate text-xs text-muted-foreground">{parts.join(" / ")}</p>;
 }
 
 function TaskView({
   tasks,
+  busy,
   onCancel,
   onRetry,
-  onDetails
+  onDetails,
+  onDelete
 }: {
   tasks: TranscodeTask[];
+  busy: boolean;
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
   onDetails: (id: string) => void;
+  onDelete: (id: string) => void;
 }) {
+  const [confirmingDelete, setConfirmingDelete] = React.useState("");
+
   return (
     <div className="space-y-3">
       <AnimatePresence initial={false}>
@@ -483,13 +786,13 @@ function TaskView({
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div className="min-w-0">
                     <div className="mb-2 flex flex-wrap items-center gap-2">
-                      <CardTitle className="truncate">{task.input || task.inputRelPath || task.id}</CardTitle>
+                      <CardTitle className="min-w-0 truncate">{task.input || task.inputRelPath || task.id}</CardTitle>
                       <StateBadge state={task.state} />
                       {task.legacy ? <Badge variant="outline">Legacy</Badge> : null}
                     </div>
                     <p className="truncate text-xs text-muted-foreground">{task.outputDir}</p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 md:justify-end">
                     <Tip content="Load full task details and output file links">
                       <Button variant="outline" size="sm" onClick={() => onDetails(task.id)}>
                         <FileSearch />
@@ -512,14 +815,33 @@ function TaskView({
                         </Button>
                       </Tip>
                     ) : null}
+                    <Tip content={canDeleteTask(task) ? "Click once more to delete this task folder" : "Cancel running tasks before deleting"}>
+                      <Button
+                        variant={confirmingDelete === task.id ? "destructive" : "outline"}
+                        size="sm"
+                        disabled={busy || !canDeleteTask(task)}
+                        onClick={() => {
+                          if (confirmingDelete === task.id) {
+                            setConfirmingDelete("");
+                            onDelete(task.id);
+                            return;
+                          }
+                          setConfirmingDelete(task.id);
+                        }}
+                      >
+                        <Trash2 />
+                        {confirmingDelete === task.id ? "Confirm" : "Delete"}
+                      </Button>
+                    </Tip>
                   </div>
                 </div>
               </CardHeader>
               <CardContent>
                 <Progress value={stateProgress(task.state)} />
-                <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
+                <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-5">
                   <span>Updated {formatDate(task.updatedAt)}</span>
                   <span>{task.encodedCodecs?.length ? task.encodedCodecs.join(", ") : "No encoded codec"}</span>
+                  <span>{taskSubtitleLanguages(task).length ? `${taskSubtitleLanguages(task).join(", ")} subtitles` : "No subtitles"}</span>
                   <span>{task.duration ? `${Math.round(task.duration / 60)} min` : "Duration pending"}</span>
                   <span>{task.files ? `${Object.keys(task.files).length} files` : task.state === "complete" ? "Details needed" : "Files pending"}</span>
                 </div>
@@ -536,7 +858,7 @@ function TaskView({
                           rel="noreferrer"
                           key={name}
                         >
-                          {name} · {formatBytes(size)}
+                          {name} / {formatBytes(size)}
                         </a>
                       ))}
                   </div>
@@ -548,6 +870,49 @@ function TaskView({
       </AnimatePresence>
       {!tasks.length ? <EmptyState label="No tasks found" /> : null}
     </div>
+  );
+}
+
+function DeleteFilteredDialog({
+  open,
+  totalCount,
+  deletableCount,
+  skippedCount,
+  busy,
+  onOpenChange,
+  onConfirm
+}: {
+  open: boolean;
+  totalCount: number;
+  deletableCount: number;
+  skippedCount: number;
+  busy: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete filtered tasks</DialogTitle>
+          <DialogDescription>
+            {deletableCount.toLocaleString()} of {totalCount.toLocaleString()} filtered task folders will be deleted from the output directory.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-foreground">
+          This removes generated files and job metadata for the matching tasks. {skippedCount ? `${skippedCount.toLocaleString()} running task${skippedCount === 1 ? "" : "s"} will be skipped.` : "This cannot be undone."}
+        </div>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+            Keep tasks
+          </Button>
+          <Button variant="destructive" onClick={onConfirm} disabled={busy || deletableCount === 0}>
+            {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
+            Delete {deletableCount.toLocaleString()}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -717,8 +1082,8 @@ function LabeledSlider({
 function Stat({ icon: Icon, label, value, detail }: { icon: React.ElementType; label: string; value: string; detail: string }) {
   return (
     <Card>
-      <CardContent className="flex items-center gap-3 p-4">
-        <div className="flex size-10 items-center justify-center rounded-lg bg-muted text-primary">
+      <CardContent className="flex min-w-0 items-center gap-3 p-4">
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-primary">
           <Icon className="size-5" />
         </div>
         <div className="min-w-0">
@@ -757,6 +1122,37 @@ function countByState(tasks: TranscodeTask[], state: string) {
   return tasks.filter((task) => task.state === state).length;
 }
 
+function canDeleteTask(task: TranscodeTask) {
+  return task.state !== "running";
+}
+
+function taskCodecs(task: TranscodeTask) {
+  return (task.encodedCodecs ?? []).filter(Boolean);
+}
+
+function taskSubtitleLanguages(task: TranscodeTask) {
+  const values = task.subtitleLanguages?.length
+    ? task.subtitleLanguages
+    : (task.streams ?? []).filter((stream) => stream.codecType === "subtitle").map((stream) => stream.language || "und");
+  return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
+function taskOptions(tasks: TranscodeTask[], getValues: (task: TranscodeTask) => string[]) {
+  return Array.from(new Set(tasks.flatMap((task) => getValues(task)))).sort((a, b) => a.localeCompare(b));
+}
+
+function filterTasks(tasks: TranscodeTask[], completion: string, codecFilters: string[], subtitleFilters: string[]) {
+  return tasks.filter((task) => {
+    if (completion === "complete" && task.state !== "complete") return false;
+    if (completion === "incomplete" && task.state === "complete") return false;
+    const codecs = taskCodecs(task);
+    if (codecFilters.length && !codecFilters.some((codec) => codecs.includes(codec))) return false;
+    const subtitles = taskSubtitleLanguages(task);
+    if (subtitleFilters.length && !subtitleFilters.some((language) => subtitles.includes(language))) return false;
+    return true;
+  });
+}
+
 function kindLabel(value: string) {
   switch (value) {
     case "movie":
@@ -793,8 +1189,8 @@ function stateProgress(state: string) {
 function scanDetail(scan?: ScanStatus) {
   if (!scan) return "Never";
   if (scan.running) {
-    const visited = `${(scan.dirsScanned ?? 0).toLocaleString()} dirs · ${(scan.filesScanned ?? 0).toLocaleString()} files`;
-    return scan.currentPath ? `${visited} · ${scan.currentPath}` : visited;
+    const visited = `${(scan.dirsScanned ?? 0).toLocaleString()} dirs / ${(scan.filesScanned ?? 0).toLocaleString()} files`;
+    return scan.currentPath ? `${visited} / ${scan.currentPath}` : visited;
   }
   return formatDate(scan.lastFinishedAt);
 }
@@ -808,7 +1204,8 @@ function mergeTaskDetails(next: TranscodeTask[], current: TranscodeTask[]) {
       ...existing,
       ...task,
       files: task.files ?? existing.files,
-      streams: task.streams ?? existing.streams
+      streams: task.streams ?? existing.streams,
+      subtitleLanguages: task.subtitleLanguages ?? existing.subtitleLanguages
     };
   });
 }

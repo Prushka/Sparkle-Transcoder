@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -174,6 +175,97 @@ func TestValidateTaskIDRejectsTraversal(t *testing.T) {
 	}
 	if err := validateTaskID("abc12"); err != nil {
 		t.Fatalf("validateTaskID(valid) = %v", err)
+	}
+}
+
+func TestDeleteRemovesTaskFolderAndCache(t *testing.T) {
+	output := t.TempDir()
+	taskDir := filepath.Join(output, "abc12")
+	if err := os.MkdirAll(taskDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	task := &Task{
+		ID:        "abc12",
+		Input:     "movie.mkv",
+		OutputDir: taskDir,
+		State:     StateComplete,
+		Params:    Params{},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := writeTask(task); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{
+		cfg:     &config.Config{Output: output},
+		cancels: map[string]context.CancelFunc{},
+		cache:   []Task{compactTask(*task)},
+	}
+	if err := store.Delete(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
+		t.Fatalf("task dir still exists, stat error = %v", err)
+	}
+	tasks, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("cache has %d tasks, want 0", len(tasks))
+	}
+}
+
+func TestDeleteRejectsRunningTask(t *testing.T) {
+	output := t.TempDir()
+	taskDir := filepath.Join(output, "abc12")
+	if err := os.MkdirAll(taskDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	task := &Task{
+		ID:        "abc12",
+		Input:     "movie.mkv",
+		OutputDir: taskDir,
+		State:     StateRunning,
+		Params:    Params{},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := writeTask(task); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{cfg: &config.Config{Output: output}, cancels: map[string]context.CancelFunc{}}
+	if err := store.Delete(task.ID); !errors.Is(err, ErrTaskRunning) {
+		t.Fatalf("Delete error = %v, want ErrTaskRunning", err)
+	}
+	if _, err := os.Stat(taskDir); err != nil {
+		t.Fatalf("task dir missing after rejected delete: %v", err)
+	}
+}
+
+func TestCompactTaskIncludesSubtitleLanguages(t *testing.T) {
+	task := Task{
+		ID:    "abc12",
+		State: StateComplete,
+		Streams: []Stream{
+			{CodecType: subtitleType, Language: "jpn"},
+			{CodecType: subtitleType, Language: ""},
+			{CodecType: subtitleType, Language: "eng"},
+			{CodecType: audioType, Language: "eng"},
+		},
+	}
+	got := compactTask(task)
+	want := []string{"eng", "jpn", "und"}
+	if len(got.SubtitleLangs) != len(want) {
+		t.Fatalf("subtitle languages = %+v, want %+v", got.SubtitleLangs, want)
+	}
+	for i := range want {
+		if got.SubtitleLangs[i] != want[i] {
+			t.Fatalf("subtitle languages = %+v, want %+v", got.SubtitleLangs, want)
+		}
+	}
+	if got.Streams != nil {
+		t.Fatalf("compact task kept streams: %+v", got.Streams)
 	}
 }
 

@@ -46,6 +46,7 @@ type Task struct {
 	StartedAt      *time.Time          `json:"startedAt,omitempty"`
 	FinishedAt     *time.Time          `json:"finishedAt,omitempty"`
 	EncodedCodecs  []string            `json:"encodedCodecs,omitempty"`
+	SubtitleLangs  []string            `json:"subtitleLanguages,omitempty"`
 	MappedAudio    map[string][]Stream `json:"mappedAudio,omitempty"`
 	Streams        []Stream            `json:"streams,omitempty"`
 	Duration       float64             `json:"duration,omitempty"`

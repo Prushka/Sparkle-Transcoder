@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,8 @@ type Store struct {
 	cacheErr   string
 	refreshing bool
 }
+
+var ErrTaskRunning = errors.New("task is running; cancel it before deleting")
 
 func NewStore(cfg *config.Config, scanner *media.Scanner, runner *Runner) *Store {
 	store := &Store{
@@ -282,6 +285,28 @@ func (s *Store) Retry(ctx context.Context, id string) (*Task, error) {
 	}
 }
 
+func (s *Store) Delete(id string) error {
+	dir, err := s.taskDir(id)
+	if err != nil {
+		return err
+	}
+	task, err := s.Read(id)
+	if err == nil && task.State == StateRunning {
+		return ErrTaskRunning
+	}
+	s.mu.Lock()
+	cancel := s.cancels[id]
+	s.mu.Unlock()
+	if cancel != nil {
+		return ErrTaskRunning
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	s.removeCache(id)
+	return nil
+}
+
 func (s *Store) worker() {
 	for id := range s.queue {
 		task, err := s.Read(id)
@@ -306,6 +331,25 @@ func (s *Store) worker() {
 	}
 }
 
+func (s *Store) taskDir(id string) (string, error) {
+	if err := validateTaskID(id); err != nil {
+		return "", fmt.Errorf("invalid task id")
+	}
+	output, err := filepath.Abs(s.cfg.Output)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(output, id)
+	rel, err := filepath.Rel(output, dir)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("task directory outside output root")
+	}
+	return dir, nil
+}
+
 func (s *Store) write(task *Task) error {
 	return writeTask(task)
 }
@@ -320,6 +364,18 @@ func (s *Store) upsertCache(task *Task) {
 		}
 	}
 	s.cache = append([]Task{compactTask(*task)}, s.cache...)
+}
+
+func (s *Store) removeCache(id string) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	next := s.cache[:0]
+	for _, task := range s.cache {
+		if task.ID != id {
+			next = append(next, task)
+		}
+	}
+	s.cache = next
 }
 
 func writeTask(task *Task) error {
@@ -494,6 +550,7 @@ func compactTasks(tasks []Task) []Task {
 }
 
 func compactTask(task Task) Task {
+	task.SubtitleLangs = subtitleLanguages(task.Streams)
 	task.Streams = nil
 	task.MappedAudio = nil
 	task.Chapters = nil
@@ -501,4 +558,24 @@ func compactTask(task Task) Task {
 	task.Media = nil
 	task.Files = nil
 	return task
+}
+
+func subtitleLanguages(streams []Stream) []string {
+	seen := map[string]bool{}
+	for _, stream := range streams {
+		if stream.CodecType != subtitleType {
+			continue
+		}
+		lang := strings.TrimSpace(stream.Language)
+		if lang == "" {
+			lang = "und"
+		}
+		seen[lang] = true
+	}
+	out := make([]string, 0, len(seen))
+	for lang := range seen {
+		out = append(out, lang)
+	}
+	sort.Strings(out)
+	return out
 }

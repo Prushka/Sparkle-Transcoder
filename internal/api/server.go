@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,7 +34,7 @@ func New(cfg *config.Config, scanner *media.Scanner, tasks *task.Store) *Server 
 	e.Use(middleware.Gzip())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: []string{"*"},
-		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
 		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept},
 	}))
 	s := &Server{cfg: cfg, scanner: scanner, tasks: tasks, echo: e}
@@ -55,6 +56,7 @@ func (s *Server) routes() {
 	api.GET("/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
+	api.GET("/tools", s.toolStatus)
 	api.GET("/config", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"mediaRoot":       s.cfg.MediaRoot,
@@ -97,6 +99,84 @@ func (s *Server) routes() {
 	api.POST("/tasks", s.createTask)
 	api.POST("/tasks/:id/cancel", s.cancelTask)
 	api.POST("/tasks/:id/retry", s.retryTask)
+	api.DELETE("/tasks/:id", s.deleteTask)
+	api.POST("/tasks/delete", s.deleteTasks)
+}
+
+type toolSpec struct {
+	ID          string
+	Name        string
+	Command     string
+	VersionArgs []string
+}
+
+type toolReadiness struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Command  string `json:"command"`
+	Path     string `json:"path,omitempty"`
+	Ready    bool   `json:"ready"`
+	Version  string `json:"version,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Required bool   `json:"required"`
+}
+
+func (s *Server) toolStatus(c echo.Context) error {
+	specs := []toolSpec{
+		{ID: "ffmpeg", Name: "FFmpeg", Command: s.cfg.Ffmpeg, VersionArgs: []string{"-version"}},
+		{ID: "ffprobe", Name: "FFprobe", Command: s.cfg.Ffprobe, VersionArgs: []string{"-version"}},
+		{ID: "handbrake", Name: "HandBrakeCLI", Command: s.cfg.HandbrakeCli, VersionArgs: []string{"--version"}},
+	}
+	tools := make([]toolReadiness, 0, len(specs))
+	for _, spec := range specs {
+		tools = append(tools, checkTool(c.Request().Context(), spec))
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"tools": tools})
+}
+
+func checkTool(parent context.Context, spec toolSpec) toolReadiness {
+	status := toolReadiness{
+		ID:       spec.ID,
+		Name:     spec.Name,
+		Command:  spec.Command,
+		Required: true,
+	}
+	path, err := exec.LookPath(spec.Command)
+	if err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	status.Path = path
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, spec.VersionArgs...)
+	out, err := cmd.CombinedOutput()
+	status.Version = firstVersionLine(string(out))
+	if err != nil {
+		if ctx.Err() != nil {
+			status.Error = ctx.Err().Error()
+		} else {
+			status.Error = err.Error()
+		}
+		return status
+	}
+	status.Ready = true
+	return status
+}
+
+func firstVersionLine(output string) string {
+	output = strings.ReplaceAll(output, "\r\n", "\n")
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) > 160 {
+			return line[:157] + "..."
+		}
+		return line
+	}
+	return "Available"
 }
 
 func (s *Server) listMedia(c echo.Context) error {
@@ -218,6 +298,51 @@ func (s *Server) retryTask(c echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusAccepted, t)
+}
+
+func (s *Server) deleteTask(c echo.Context) error {
+	if err := s.tasks.Delete(c.Param("id")); err != nil {
+		if errors.Is(err, task.ErrTaskRunning) {
+			return echo.NewHTTPError(http.StatusConflict, err.Error())
+		}
+		return err
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"deleted": 1})
+}
+
+func (s *Server) deleteTasks(c echo.Context) error {
+	req := struct {
+		IDs []string `json:"ids"`
+	}{}
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	if len(req.IDs) == 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, "ids are required")
+	}
+	type deleteFailure struct {
+		ID    string `json:"id"`
+		Error string `json:"error"`
+	}
+	seen := map[string]bool{}
+	failures := []deleteFailure{}
+	deleted := 0
+	for _, id := range req.IDs {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if err := s.tasks.Delete(id); err != nil {
+			failures = append(failures, deleteFailure{ID: id, Error: err.Error()})
+			continue
+		}
+		deleted++
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"requested": len(seen),
+		"deleted":   deleted,
+		"failures":  failures,
+	})
 }
 
 func StaticURLForOutput(id, name string) string {

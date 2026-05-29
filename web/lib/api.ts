@@ -62,6 +62,17 @@ export type PublicConfig = {
   enableSprite: boolean;
 };
 
+export type ToolReadiness = {
+  id: string;
+  name: string;
+  command: string;
+  path?: string;
+  ready: boolean;
+  version?: string;
+  error?: string;
+  required: boolean;
+};
+
 export type TaskParams = {
   fast: boolean;
   enableEncode?: boolean;
@@ -88,6 +99,7 @@ export type TranscodeTask = {
   startedAt?: string;
   finishedAt?: string;
   encodedCodecs?: string[];
+  subtitleLanguages?: string[];
   streams?: { codecType?: string; codecName?: string; location?: string; language?: string; index: number }[];
   duration?: number;
   width?: number;
@@ -122,7 +134,14 @@ export const api = {
   createTask: (mediaId: string, params: TaskParams) =>
     request<TranscodeTask>("/tasks", { method: "POST", body: JSON.stringify({ mediaId, params }) }),
   cancelTask: (id: string) => request<TranscodeTask>(`/tasks/${id}/cancel`, { method: "POST", body: "{}" }),
-  retryTask: (id: string) => request<TranscodeTask>(`/tasks/${id}/retry`, { method: "POST", body: "{}" })
+  retryTask: (id: string) => request<TranscodeTask>(`/tasks/${id}/retry`, { method: "POST", body: "{}" }),
+  tools: () => request<{ tools: ToolReadiness[] }>("/tools"),
+  deleteTask: (id: string) => request<{ deleted: number }>(`/tasks/${id}`, { method: "DELETE" }),
+  deleteTasks: (ids: string[]) =>
+    request<{ requested: number; deleted: number; failures: { id: string; error: string }[] }>("/tasks/delete", {
+      method: "POST",
+      body: JSON.stringify({ ids })
+    })
 };
 
 export function posterUrl(item: MediaItem) {
