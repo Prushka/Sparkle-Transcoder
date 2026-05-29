@@ -69,6 +69,7 @@ type TaskSelection = {
   title: string;
   description: string;
   items: MediaItem[];
+  existingTasks: TranscodeTask[];
 };
 
 const initialState: LoadState = {
@@ -251,15 +252,40 @@ export function Dashboard() {
     setSelected({
       title: title ?? first.title,
       description: description ?? first.fileName,
-      items: selectedItems
+      items: selectedItems,
+      existingTasks: existingTasksForMedia(selectedItems, state.tasks)
     });
-  }, []);
+  }, [state.tasks]);
 
-  const createTasks = async (items: MediaItem[], params: TaskParams) => {
-    const selectedItems = uniqueMediaItems(items);
+  const createTasks = async (selection: TaskSelection, params: TaskParams) => {
+    const selectedItems = uniqueMediaItems(selection.items);
     if (!selectedItems.length) return;
     setBusy(true);
     try {
+      const existingTasks = existingTasksForMedia(selectedItems, state.tasks);
+      const runningTasks = existingTasks.filter((task) => !canDeleteTask(task));
+      if (runningTasks.length) {
+        setError(`${runningTasks.length.toLocaleString()} existing task${runningTasks.length === 1 ? " is" : "s are"} running and cannot be deleted yet. Cancel or wait for ${runningTasks.length === 1 ? "it" : "them"} before queueing replacements.`);
+        return;
+      }
+
+      let deletedTaskIds = new Set<string>();
+      if (existingTasks.length) {
+        const existingTaskIds = uniqueTasks(existingTasks).map((task) => task.id);
+        const result = await api.deleteTasks(existingTaskIds);
+        const failedIds = new Set(result.failures.map((failure) => failure.id));
+        deletedTaskIds = new Set(existingTaskIds.filter((id) => !failedIds.has(id)));
+        if (result.failures.length) {
+          setState((current) => ({
+            ...current,
+            tasks: current.tasks.filter((task) => !deletedTaskIds.has(task.id))
+          }));
+          setSelected(null);
+          setError(`${deletedTaskIds.size.toLocaleString()} existing task${deletedTaskIds.size === 1 ? "" : "s"} deleted, ${result.failures.length.toLocaleString()} could not be deleted. New replacements were not queued. ${result.failures[0].error}`);
+          return;
+        }
+      }
+
       const created: TranscodeTask[] = [];
       const failures: string[] = [];
       for (const item of selectedItems) {
@@ -273,7 +299,7 @@ export function Dashboard() {
       }
       setState((current) => ({
         ...current,
-        tasks: created.reduce((tasks, task) => upsertTask(tasks, task), current.tasks)
+        tasks: created.reduce((tasks, task) => upsertTask(tasks, task), current.tasks.filter((task) => !deletedTaskIds.has(task.id)))
       }));
       setSelected(null);
       if (created.length) {
@@ -1149,7 +1175,7 @@ function TaskDialog({
   config?: PublicConfig;
   busy: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (items: MediaItem[], params: TaskParams) => void;
+  onCreate: (selection: TaskSelection, params: TaskParams) => void;
 }) {
   const [fast, setFast] = React.useState(false);
   const [enableEncode, setEnableEncode] = React.useState(true);
@@ -1170,9 +1196,12 @@ function TaskDialog({
 
   const allEncoders = ["hevc", "av1", "h264-10bit", "h264-8bit"];
   const selectedCount = selection?.items.length ?? 0;
+  const existingTaskCount = selection?.existingTasks.length ?? 0;
+  const runningExistingTaskCount = selection?.existingTasks.filter((task) => !canDeleteTask(task)).length ?? 0;
+  const blocksReplacement = runningExistingTaskCount > 0;
   const submit = () => {
     if (!selection) return;
-    onCreate(selection.items, {
+    onCreate(selection, {
       fast,
       enableEncode,
       enableSprites,
@@ -1233,13 +1262,22 @@ function TaskDialog({
             <LabeledSlider label={`Quality ${quality}`} value={quality} min={12} max={30} step={1} onChange={setQuality} tip="HandBrake constant quality value" />
             <LabeledSlider label={`Audio ${audioKbps} kbps`} value={audioKbps} min={96} max={320} step={8} onChange={setAudioKbps} tip="Opus audio bitrate per output" />
           </div>
+          {selection && existingTaskCount ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-foreground">
+              <div className="mb-1 flex items-center gap-2 font-medium">
+                <Trash2 className="size-4 text-destructive" />
+                {blocksReplacement ? "Existing task output cannot be removed yet" : "Existing task output will be removed"}
+              </div>
+              <p className="text-muted-foreground">{replacementConfirmationText(selection)}</p>
+            </div>
+          ) : null}
         </div>
         <Separator />
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={busy || (!fast && !encoders.length)}>
+          <Button onClick={submit} disabled={busy || blocksReplacement || (!fast && !encoders.length)}>
             {busy ? <Loader2 className="animate-spin" /> : <Play />}
             Queue {selectedCount === 1 ? "task" : `${selectedCount.toLocaleString()} tasks`}
           </Button>
@@ -1549,6 +1587,42 @@ function uniqueMediaItems(items: MediaItem[]) {
   return unique;
 }
 
+function uniqueTasks(tasks: TranscodeTask[]) {
+  const seen = new Set<string>();
+  const unique: TranscodeTask[] = [];
+  for (const task of tasks) {
+    if (seen.has(task.id)) continue;
+    seen.add(task.id);
+    unique.push(task);
+  }
+  return unique;
+}
+
+function existingTasksForMedia(items: MediaItem[], tasks: TranscodeTask[]) {
+  const selectedKeys = new Set(uniqueMediaItems(items).flatMap(replacementMediaKeys));
+  if (!selectedKeys.size) return [];
+  return uniqueTasks(tasks.filter((task) => replacementTaskKeys(task).some((key) => selectedKeys.has(key))));
+}
+
+function replacementMediaKeys(item: MediaItem) {
+  const keys = [taskKey("media", item.id), taskKey("path", item.path), taskKey("rel", item.relPath)];
+  if (item.kind === "episode" && item.season != null && item.episode != null) {
+    keys.push(episodeKey(item.show || item.title, item.season, item.episode));
+  }
+  return uniqueKeys(keys);
+}
+
+function replacementTaskKeys(task: TranscodeTask) {
+  const parentPath = task.inputParent && task.input ? `${task.inputParent}/${task.input}` : "";
+  const taskFile = task.input || fileNameFromPath(task.inputPath) || fileNameFromPath(task.inputRelPath);
+  const keys = [taskKey("media", task.mediaId), taskKey("path", task.inputPath), taskKey("path", parentPath), taskKey("rel", task.inputRelPath)];
+  const episode = parseEpisodeIdentity(taskFile);
+  if (episode) {
+    keys.push(episodeKey(episode.show, episode.season, episode.episode));
+  }
+  return uniqueKeys(keys);
+}
+
 function itemsForShow(items: MediaItem[], showName: string) {
   return sortMediaItems(items.filter((item) => episodeShowName(item) === showName));
 }
@@ -1580,6 +1654,24 @@ function showSelectionDescription(showName: string, items: MediaItem[]) {
   const seasonCount = new Set(items.map((item) => item.season || 0)).size;
   const seasonLabel = seasonCount === 1 ? "season" : "seasons";
   return `${selectionCountDescription(items.length, "episode")} from ${showName} across ${seasonCount.toLocaleString()} ${seasonLabel}`;
+}
+
+function replacementConfirmationText(selection: TaskSelection) {
+  const existingCount = selection.existingTasks.length;
+  const runningCount = selection.existingTasks.filter((task) => !canDeleteTask(task)).length;
+  if (runningCount) {
+    return `${runningCount.toLocaleString()} existing task${runningCount === 1 ? " is" : "s are"} running and cannot be deleted yet. Cancel or wait for ${runningCount === 1 ? "it" : "them"} before queueing replacements.`;
+  }
+  if (selection.items.length === 1) {
+    return "This media file is already in a task. Queueing it will delete the existing task output and job metadata before creating the replacement.";
+  }
+  return `${existingCount.toLocaleString()} of ${selection.items.length.toLocaleString()} selected ${selectionMediaLabel(selection.items)} already ${existingCount === 1 ? "has" : "have"} tasks. Queueing will delete those existing task outputs and job metadata before creating replacements.`;
+}
+
+function selectionMediaLabel(items: MediaItem[]) {
+  if (items.every((item) => item.kind === "episode")) return "episodes";
+  if (items.every((item) => item.kind === "movie")) return "movies";
+  return "media files";
 }
 
 function groupEpisodes(items: MediaItem[]) {
