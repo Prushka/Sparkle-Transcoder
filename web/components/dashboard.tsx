@@ -997,7 +997,7 @@ function MediaCard({ item, task, onTranscode }: { item: MediaItem; task?: Transc
     <motion.div layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
       <Card className="overflow-hidden">
         <div className="grid grid-cols-[92px_minmax(0,1fr)]">
-          <Poster item={item} className="h-full min-h-36 rounded-none border-r" />
+          <Poster item={item} className="aspect-auto h-full min-h-36 w-full rounded-none border-y-0 border-l-0 border-r" />
           <div className="min-w-0 p-3">
             <div className="mb-2 flex items-start justify-between gap-2">
               <div className="min-w-0">
