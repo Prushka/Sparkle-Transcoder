@@ -65,6 +65,12 @@ type LoadState = {
 
 type MediaTaskIndex = Map<string, TranscodeTask>;
 
+type TaskSelection = {
+  title: string;
+  description: string;
+  items: MediaItem[];
+};
+
 const initialState: LoadState = {
   tools: [],
   media: [],
@@ -76,7 +82,7 @@ export function Dashboard() {
   const [query, setQuery] = React.useState("");
   const [kind, setKind] = React.useState("all");
   const [library, setLibrary] = React.useState("all");
-  const [selected, setSelected] = React.useState<MediaItem | null>(null);
+  const [selected, setSelected] = React.useState<TaskSelection | null>(null);
   const [activeTab, setActiveTab] = React.useState("library");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
@@ -190,15 +196,18 @@ export function Dashboard() {
   }, [activeTab, loadTasks]);
 
   const libraries = React.useMemo(() => Array.from(new Set(state.media.map((item) => item.library).filter(Boolean))).sort(), [state.media]);
-  const filtered = React.useMemo(() => {
-    const q = query.trim().toLowerCase();
+  const queueScope = React.useMemo(() => {
     return state.media.filter((item) => {
       if (kind !== "all" && item.kind !== kind) return false;
       if (library !== "all" && item.library !== library) return false;
-      if (!q) return true;
-      return `${item.title} ${item.show ?? ""} ${item.fileName} ${item.library}`.toLowerCase().includes(q);
+      return true;
     });
-  }, [kind, library, query, state.media]);
+  }, [kind, library, state.media]);
+  const filtered = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return queueScope;
+    return queueScope.filter((item) => `${item.title} ${item.show ?? ""} ${item.fileName} ${item.library}`.toLowerCase().includes(q));
+  }, [query, queueScope]);
   const visibleMedia = React.useMemo(() => filtered.slice(0, mediaLimit), [filtered, mediaLimit]);
   const mediaTaskIndex = React.useMemo(() => buildMediaTaskIndex(state.tasks), [state.tasks]);
   const taskCodecOptions = React.useMemo(() => taskOptions(state.tasks, taskCodecs), [state.tasks]);
@@ -235,17 +244,42 @@ export function Dashboard() {
     }
   };
 
-  const createTask = async (item: MediaItem, params: TaskParams) => {
+  const openTaskDialog = React.useCallback((items: MediaItem[], title?: string, description?: string) => {
+    const selectedItems = uniqueMediaItems(items);
+    if (!selectedItems.length) return;
+    const first = selectedItems[0];
+    setSelected({
+      title: title ?? first.title,
+      description: description ?? first.fileName,
+      items: selectedItems
+    });
+  }, []);
+
+  const createTasks = async (items: MediaItem[], params: TaskParams) => {
+    const selectedItems = uniqueMediaItems(items);
+    if (!selectedItems.length) return;
     setBusy(true);
     try {
-      const task = await api.createTask(item.id, params);
+      const created: TranscodeTask[] = [];
+      const failures: string[] = [];
+      for (const item of selectedItems) {
+        try {
+          const task = await api.createTask(item.id, { ...params, encoders: params.encoders ? [...params.encoders] : undefined });
+          created.push(task);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Task creation failed";
+          failures.push(`${item.fileName}: ${message}`);
+        }
+      }
       setState((current) => ({
         ...current,
-        tasks: upsertTask(current.tasks, task)
+        tasks: created.reduce((tasks, task) => upsertTask(tasks, task), current.tasks)
       }));
       setSelected(null);
-      setActiveTab("tasks");
-      setError("");
+      if (created.length) {
+        setActiveTab("tasks");
+      }
+      setError(failures.length ? `${created.length.toLocaleString()} queued, ${failures.length.toLocaleString()} failed. ${failures[0]}` : "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Task creation failed");
     } finally {
@@ -380,7 +414,7 @@ export function Dashboard() {
                 setLibrary={setLibrary}
                 libraries={libraries}
               />
-              <LibraryView items={visibleMedia} taskIndex={mediaTaskIndex} onTranscode={setSelected} />
+              <LibraryView items={visibleMedia} queueItems={queueScope} taskIndex={mediaTaskIndex} onTranscode={openTaskDialog} />
               {filtered.length > visibleMedia.length ? (
                 <div className="mt-5 flex justify-center">
                   <Tip content="Render the next batch of matching media">
@@ -424,7 +458,7 @@ export function Dashboard() {
           </Tabs>
         </div>
       </main>
-      <TaskDialog item={selected} config={state.config} busy={busy} onOpenChange={(open) => !open && setSelected(null)} onCreate={createTask} />
+      <TaskDialog selection={selected} config={state.config} busy={busy} onOpenChange={(open) => !open && setSelected(null)} onCreate={createTasks} />
       <DeleteFilteredDialog
         open={deleteFilteredOpen}
         totalCount={filteredTasks.length}
@@ -705,10 +739,21 @@ function FilterGroup({
   );
 }
 
-function LibraryView({ items, taskIndex, onTranscode }: { items: MediaItem[]; taskIndex: MediaTaskIndex; onTranscode: (item: MediaItem) => void }) {
+function LibraryView({
+  items,
+  queueItems,
+  taskIndex,
+  onTranscode
+}: {
+  items: MediaItem[];
+  queueItems: MediaItem[];
+  taskIndex: MediaTaskIndex;
+  onTranscode: (items: MediaItem[], title?: string, description?: string) => void;
+}) {
   const movies = items.filter((item) => item.kind === "movie");
   const shows = groupEpisodes(items.filter((item) => item.kind === "episode"));
   const unknown = items.filter((item) => item.kind === "unknown");
+  const queueEpisodes = queueItems.filter((item) => item.kind === "episode");
 
   return (
     <div className="space-y-6">
@@ -716,35 +761,77 @@ function LibraryView({ items, taskIndex, onTranscode }: { items: MediaItem[]; ta
         <MediaSection title="Movies" icon={Film}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {movies.map((item) => (
-              <MediaCard item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={onTranscode} />
+              <MediaCard item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={(media) => onTranscode([media])} />
             ))}
           </div>
         </MediaSection>
       ) : null}
-      {shows.map((show) => (
-        <MediaSection title={show.name} icon={Tv} key={show.name}>
-          <div className="space-y-4">
-            {show.seasons.map((season) => (
-              <div key={`${show.name}-${season.number}`} className="space-y-2">
-                <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                  <span>Season {season.number}</span>
-                  <Badge variant="outline">{season.items.length}</Badge>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {season.items.map((item) => (
-                    <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={onTranscode} />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </MediaSection>
-      ))}
+      {shows.map((show) => {
+        const showItems = itemsForShow(queueEpisodes, show.name);
+        return (
+          <MediaSection
+            title={show.name}
+            icon={Tv}
+            key={show.name}
+            action={
+              <Tip content={`Queue all ${showItems.length.toLocaleString()} episodes in this show`}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onTranscode(showItems, show.name, showSelectionDescription(show.name, showItems))}
+                  disabled={!showItems.length}
+                >
+                  <Play />
+                  Queue show
+                </Button>
+              </Tip>
+            }
+          >
+            <div className="space-y-4">
+              {show.seasons.map((season) => {
+                const seasonItems = itemsForSeason(showItems, season.number);
+                return (
+                  <div key={`${show.name}-${season.number}`} className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                        <span>Season {season.number}</span>
+                        <Badge variant="outline">{season.items.length}</Badge>
+                      </div>
+                      <Tip content={`Queue all ${seasonItems.length.toLocaleString()} episodes in this season`}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() =>
+                            onTranscode(
+                              seasonItems,
+                              `${show.name} / Season ${season.number}`,
+                              selectionCountDescription(seasonItems.length, "episode")
+                            )
+                          }
+                          disabled={!seasonItems.length}
+                        >
+                          <Play />
+                          Queue season
+                        </Button>
+                      </Tip>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                      {season.items.map((item) => (
+                        <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={(media) => onTranscode([media])} />
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </MediaSection>
+        );
+      })}
       {unknown.length ? (
         <MediaSection title="Unmatched" icon={Video}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {unknown.map((item) => (
-              <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={onTranscode} />
+              <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={(media) => onTranscode([media])} />
             ))}
           </div>
         </MediaSection>
@@ -754,12 +841,25 @@ function LibraryView({ items, taskIndex, onTranscode }: { items: MediaItem[]; ta
   );
 }
 
-function MediaSection({ title, icon: Icon, children }: { title: string; icon: React.ElementType; children: React.ReactNode }) {
+function MediaSection({
+  title,
+  icon: Icon,
+  action,
+  children
+}: {
+  title: string;
+  icon: React.ElementType;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <section>
-      <div className="mb-3 flex items-center gap-2">
-        <Icon className="size-4 text-primary" />
-        <h2 className="text-lg font-semibold tracking-normal">{title}</h2>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <Icon className="size-4 shrink-0 text-primary" />
+          <h2 className="truncate text-lg font-semibold tracking-normal">{title}</h2>
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
       </div>
       {children}
     </section>
@@ -1039,17 +1139,17 @@ function DeleteFilteredDialog({
 }
 
 function TaskDialog({
-  item,
+  selection,
   config,
   busy,
   onOpenChange,
   onCreate
 }: {
-  item: MediaItem | null;
+  selection: TaskSelection | null;
   config?: PublicConfig;
   busy: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (item: MediaItem, params: TaskParams) => void;
+  onCreate: (items: MediaItem[], params: TaskParams) => void;
 }) {
   const [fast, setFast] = React.useState(false);
   const [enableEncode, setEnableEncode] = React.useState(true);
@@ -1066,12 +1166,13 @@ function TaskDialog({
     setEncoders(config.encoders?.length ? config.encoders : ["hevc"]);
     setQuality(Number(config.quality || 18));
     setAudioKbps(config.audioKbps || 144);
-  }, [config, item?.id]);
+  }, [config, selection?.items[0]?.id]);
 
   const allEncoders = ["hevc", "av1", "h264-10bit", "h264-8bit"];
+  const selectedCount = selection?.items.length ?? 0;
   const submit = () => {
-    if (!item) return;
-    onCreate(item, {
+    if (!selection) return;
+    onCreate(selection.items, {
       fast,
       enableEncode,
       enableSprites,
@@ -1084,11 +1185,11 @@ function TaskDialog({
   };
 
   return (
-    <Dialog open={!!item} onOpenChange={onOpenChange}>
+    <Dialog open={!!selection} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{item?.title ?? "Transcode"}</DialogTitle>
-          <DialogDescription>{item?.fileName}</DialogDescription>
+          <DialogTitle>{selection?.title ?? "Transcode"}</DialogTitle>
+          <DialogDescription>{selection?.description}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-4">
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1140,7 +1241,7 @@ function TaskDialog({
           </Button>
           <Button onClick={submit} disabled={busy || (!fast && !encoders.length)}>
             {busy ? <Loader2 className="animate-spin" /> : <Play />}
-            Queue task
+            Queue {selectedCount === 1 ? "task" : `${selectedCount.toLocaleString()} tasks`}
           </Button>
         </div>
       </DialogContent>
@@ -1437,10 +1538,54 @@ function upsertTask(tasks: TranscodeTask[], next: TranscodeTask) {
   return found ? updated : [next, ...tasks];
 }
 
+function uniqueMediaItems(items: MediaItem[]) {
+  const seen = new Set<string>();
+  const unique: MediaItem[] = [];
+  for (const item of items) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    unique.push(item);
+  }
+  return unique;
+}
+
+function itemsForShow(items: MediaItem[], showName: string) {
+  return sortMediaItems(items.filter((item) => episodeShowName(item) === showName));
+}
+
+function itemsForSeason(items: MediaItem[], seasonNumber: number) {
+  return sortMediaItems(items.filter((item) => (item.season || 0) === seasonNumber));
+}
+
+function sortMediaItems(items: MediaItem[]) {
+  return [...items].sort(
+    (a, b) =>
+      (a.season || 0) - (b.season || 0) ||
+      (a.episode || 0) - (b.episode || 0) ||
+      a.sortKey.localeCompare(b.sortKey) ||
+      a.fileName.localeCompare(b.fileName)
+  );
+}
+
+function episodeShowName(item: MediaItem) {
+  return item.show || "Unknown Show";
+}
+
+function selectionCountDescription(count: number, singular: string) {
+  const label = count === 1 ? singular : `${singular}s`;
+  return `${count.toLocaleString()} ${label} selected`;
+}
+
+function showSelectionDescription(showName: string, items: MediaItem[]) {
+  const seasonCount = new Set(items.map((item) => item.season || 0)).size;
+  const seasonLabel = seasonCount === 1 ? "season" : "seasons";
+  return `${selectionCountDescription(items.length, "episode")} from ${showName} across ${seasonCount.toLocaleString()} ${seasonLabel}`;
+}
+
 function groupEpisodes(items: MediaItem[]) {
   const shows = new Map<string, Map<number, MediaItem[]>>();
   for (const item of items) {
-    const show = item.show || "Unknown Show";
+    const show = episodeShowName(item);
     const season = item.season || 0;
     if (!shows.has(show)) shows.set(show, new Map());
     const seasons = shows.get(show)!;
