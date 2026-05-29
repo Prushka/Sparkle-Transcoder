@@ -1,0 +1,11 @@
+.DS_Store
+.idea/
+.sparkle-transcoder/
+bin/
+tmp/
+
+web/.next/
+web/node_modules/
+web/out/
+web/.env.local
+web/tsconfig.tsbuildinfo
