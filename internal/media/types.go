@@ -77,6 +77,9 @@ type ScanStatus struct {
 	Error          string     `json:"error,omitempty"`
 	Items          int        `json:"items"`
 	Changed        int        `json:"changed"`
+	CurrentPath    string     `json:"currentPath,omitempty"`
+	DirsScanned    int        `json:"dirsScanned"`
+	FilesScanned   int        `json:"filesScanned"`
 }
 
 func NewIndex(root string) *Index {

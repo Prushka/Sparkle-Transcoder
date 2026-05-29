@@ -5,6 +5,7 @@ import {
   BadgeCheck,
   Ban,
   Clapperboard,
+  FileSearch,
   Film,
   FolderSync,
   Gauge,
@@ -58,11 +59,18 @@ export function Dashboard() {
   const [activeTab, setActiveTab] = React.useState("library");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [mediaLimit, setMediaLimit] = React.useState(150);
+  const [taskLimit, setTaskLimit] = React.useState(100);
 
   const refresh = React.useCallback(async () => {
     try {
       const [config, mediaResponse, taskResponse, scan] = await Promise.all([api.config(), api.media(), api.tasks(), api.scanStatus()]);
-      setState({ config, media: mediaResponse.items, tasks: taskResponse.tasks, scan });
+      setState((current) => ({
+        config,
+        media: mediaResponse.items,
+        tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
+        scan
+      }));
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to reach backend");
@@ -85,6 +93,12 @@ export function Dashboard() {
       return `${item.title} ${item.show ?? ""} ${item.fileName} ${item.library}`.toLowerCase().includes(q);
     });
   }, [kind, library, query, state.media]);
+  const visibleMedia = React.useMemo(() => filtered.slice(0, mediaLimit), [filtered, mediaLimit]);
+  const visibleTasks = React.useMemo(() => state.tasks.slice(0, taskLimit), [state.tasks, taskLimit]);
+
+  React.useEffect(() => {
+    setMediaLimit(150);
+  }, [kind, library, query]);
 
   const startScan = async (force: boolean) => {
     setBusy(true);
@@ -120,6 +134,19 @@ export function Dashboard() {
   const retryTask = async (id: string) => {
     await api.retryTask(id);
     await refresh();
+  };
+
+  const loadTaskDetails = async (id: string) => {
+    try {
+      const details = await api.task(id);
+      setState((current) => ({
+        ...current,
+        tasks: current.tasks.map((task) => (task.id === id ? details : task))
+      }));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load task details");
+    }
   };
 
   return (
@@ -161,7 +188,7 @@ export function Dashboard() {
             <Stat icon={HardDrive} label="Media" value={state.media.length.toLocaleString()} detail={`${filtered.length.toLocaleString()} visible`} />
             <Stat icon={ListVideo} label="Tasks" value={state.tasks.length.toLocaleString()} detail={`${countByState(state.tasks, "running")} running`} />
             <Stat icon={BadgeCheck} label="Complete" value={countByState(state.tasks, "complete").toLocaleString()} detail={`${countByState(state.tasks, "failed")} failed`} />
-            <Stat icon={Gauge} label="Scan" value={state.scan?.running ? "Running" : "Idle"} detail={formatDate(state.scan?.lastFinishedAt)} />
+            <Stat icon={Gauge} label="Scan" value={state.scan?.running ? "Running" : "Idle"} detail={scanDetail(state.scan)} />
           </section>
 
           <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -185,10 +212,28 @@ export function Dashboard() {
                 setLibrary={setLibrary}
                 libraries={libraries}
               />
-              <LibraryView items={filtered} onTranscode={setSelected} />
+              <LibraryView items={visibleMedia} onTranscode={setSelected} />
+              {filtered.length > visibleMedia.length ? (
+                <div className="mt-5 flex justify-center">
+                  <Tip content="Render the next batch of matching media">
+                    <Button variant="outline" onClick={() => setMediaLimit((value) => value + 150)}>
+                      Show {Math.min(150, filtered.length - visibleMedia.length).toLocaleString()} more
+                    </Button>
+                  </Tip>
+                </div>
+              ) : null}
             </TabsContent>
             <TabsContent value="tasks">
-              <TaskView tasks={state.tasks} onCancel={cancelTask} onRetry={retryTask} />
+              <TaskView tasks={visibleTasks} onCancel={cancelTask} onRetry={retryTask} onDetails={loadTaskDetails} />
+              {state.tasks.length > visibleTasks.length ? (
+                <div className="mt-5 flex justify-center">
+                  <Tip content="Render the next batch of tasks">
+                    <Button variant="outline" onClick={() => setTaskLimit((value) => value + 100)}>
+                      Show {Math.min(100, state.tasks.length - visibleTasks.length).toLocaleString()} more
+                    </Button>
+                  </Tip>
+                </div>
+              ) : null}
             </TabsContent>
           </Tabs>
         </div>
@@ -420,11 +465,13 @@ function MetaLine({ item }: { item: MediaItem }) {
 function TaskView({
   tasks,
   onCancel,
-  onRetry
+  onRetry,
+  onDetails
 }: {
   tasks: TranscodeTask[];
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
+  onDetails: (id: string) => void;
 }) {
   return (
     <div className="space-y-3">
@@ -443,6 +490,12 @@ function TaskView({
                     <p className="truncate text-xs text-muted-foreground">{task.outputDir}</p>
                   </div>
                   <div className="flex items-center gap-2">
+                    <Tip content="Load full task details and output file links">
+                      <Button variant="outline" size="sm" onClick={() => onDetails(task.id)}>
+                        <FileSearch />
+                        Details
+                      </Button>
+                    </Tip>
                     {task.state === "running" || task.state === "queued" ? (
                       <Tip content="Cancel this queued or running task">
                         <Button variant="destructive" size="sm" onClick={() => onCancel(task.id)}>
@@ -468,7 +521,7 @@ function TaskView({
                   <span>Updated {formatDate(task.updatedAt)}</span>
                   <span>{task.encodedCodecs?.length ? task.encodedCodecs.join(", ") : "No encoded codec"}</span>
                   <span>{task.duration ? `${Math.round(task.duration / 60)} min` : "Duration pending"}</span>
-                  <span>{task.files ? `${Object.keys(task.files).length} files` : "Files pending"}</span>
+                  <span>{task.files ? `${Object.keys(task.files).length} files` : task.state === "complete" ? "Details needed" : "Files pending"}</span>
                 </div>
                 {task.error ? <div className="mt-3 rounded-md border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-100">{task.error}</div> : null}
                 {task.files && Object.keys(task.files).length ? (
@@ -735,6 +788,29 @@ function stateProgress(state: string) {
     default:
       return 15;
   }
+}
+
+function scanDetail(scan?: ScanStatus) {
+  if (!scan) return "Never";
+  if (scan.running) {
+    const visited = `${(scan.dirsScanned ?? 0).toLocaleString()} dirs · ${(scan.filesScanned ?? 0).toLocaleString()} files`;
+    return scan.currentPath ? `${visited} · ${scan.currentPath}` : visited;
+  }
+  return formatDate(scan.lastFinishedAt);
+}
+
+function mergeTaskDetails(next: TranscodeTask[], current: TranscodeTask[]) {
+  const detailed = new Map(current.filter((task) => task.files || task.streams).map((task) => [task.id, task]));
+  return next.map((task) => {
+    const existing = detailed.get(task.id);
+    if (!existing) return task;
+    return {
+      ...existing,
+      ...task,
+      files: task.files ?? existing.files,
+      streams: task.streams ?? existing.streams
+    };
+  });
 }
 
 function groupEpisodes(items: MediaItem[]) {

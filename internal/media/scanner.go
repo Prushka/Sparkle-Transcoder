@@ -90,6 +90,10 @@ func (s *Scanner) LoadCache() error {
 	defer s.mu.Unlock()
 	s.index = idx
 	s.status.Items = len(idx.Items)
+	if !idx.GeneratedAt.IsZero() {
+		generatedAt := idx.GeneratedAt
+		s.status.LastFinishedAt = &generatedAt
+	}
 	return nil
 }
 
@@ -104,6 +108,9 @@ func (s *Scanner) Scan(ctx context.Context, force bool) (*Index, error) {
 	s.status.Incremental = s.cfg.IncrementalScan && !force
 	s.status.LastStartedAt = &start
 	s.status.Error = ""
+	s.status.CurrentPath = ""
+	s.status.DirsScanned = 0
+	s.status.FilesScanned = 0
 	s.mu.Unlock()
 
 	idx, changed, err := s.scan(ctx, force)
@@ -114,6 +121,7 @@ func (s *Scanner) Scan(ctx context.Context, force bool) (*Index, error) {
 	s.status.Running = false
 	s.status.LastFinishedAt = &finish
 	s.status.Changed = changed
+	s.status.CurrentPath = ""
 	if err != nil {
 		s.status.Error = err.Error()
 		return nil, err
@@ -165,6 +173,7 @@ func (s *Scanner) fullScan(ctx context.Context, idx *Index, session *scanSession
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			s.noteScanPath(path, d.IsDir(), len(idx.Items))
 			if d.IsDir() {
 				if s.skipPath(path) && path != root {
 					return filepath.SkipDir
@@ -188,6 +197,7 @@ func (s *Scanner) incrementalScan(ctx context.Context, idx *Index, session *scan
 		if err := ctx.Err(); err != nil {
 			return changed, err
 		}
+		s.noteScanPath(item.Path, false, len(idx.Items))
 		stat, err := os.Stat(item.Path)
 		if err != nil {
 			delete(idx.Items, id)
@@ -258,6 +268,7 @@ func (s *Scanner) scanChangedDir(ctx context.Context, idx *Index, dir string, se
 			return err
 		}
 		abs := filepath.Join(dir, entry.Name())
+		s.noteScanPath(abs, entry.IsDir(), len(idx.Items))
 		if entry.IsDir() {
 			if s.skipPath(abs) {
 				continue
@@ -630,6 +641,21 @@ func (s *Scanner) updateScanProgress(items int) {
 	if s.status.Running {
 		s.status.Items = items
 	}
+}
+
+func (s *Scanner) noteScanPath(path string, isDir bool, items int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.status.Running {
+		return
+	}
+	if isDir {
+		s.status.DirsScanned++
+	} else {
+		s.status.FilesScanned++
+	}
+	s.status.CurrentPath = s.rel(path)
+	s.status.Items = items
 }
 
 func ValidateUnderRoot(root, path string) error {

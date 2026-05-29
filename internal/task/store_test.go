@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"sparkle-transcoder/internal/config"
+	"sparkle-transcoder/internal/executil"
 	"sparkle-transcoder/internal/media"
 )
 
@@ -92,6 +94,78 @@ func TestCreateHonorsExplicitExtractStreamsFalse(t *testing.T) {
 	}
 }
 
+func TestWorkerUpdatesListCacheAfterRun(t *testing.T) {
+	output := t.TempDir()
+	input := filepath.Join(t.TempDir(), "Movies", "Example", "Example.mkv")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	enableEncode := false
+	enableSprites := false
+	extractStreams := false
+	now := time.Now().UTC()
+	task := &Task{
+		ID:        "abc12",
+		InputPath: input,
+		Input:     filepath.Base(input),
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateQueued,
+		Params: Params{
+			EnableEncode:   &enableEncode,
+			EnableSprites:  &enableSprites,
+			ExtractStreams: &extractStreams,
+			VideoExt:       "mp4",
+			AudioKbps:      144,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := writeTask(task); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{Output: output, Ffprobe: "ffprobe", Ffmpeg: "ffmpeg"}
+	store := &Store{
+		cfg:     cfg,
+		runner:  NewRunner(cfg, nil, fakeExec{}),
+		queue:   make(chan string, 1),
+		cancels: map[string]context.CancelFunc{},
+		cache:   []Task{compactTask(*task)},
+		cacheAt: now,
+	}
+	store.queue <- task.ID
+	close(store.queue)
+
+	done := make(chan struct{})
+	go func() {
+		store.worker()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not finish")
+	}
+
+	tasks, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %d, want 1", len(tasks))
+	}
+	if tasks[0].State != StateComplete {
+		t.Fatalf("cached task state = %s, want %s", tasks[0].State, StateComplete)
+	}
+	if tasks[0].FinishedAt == nil {
+		t.Fatal("cached task missing finished timestamp")
+	}
+}
+
 func TestValidateTaskIDRejectsTraversal(t *testing.T) {
 	for _, id := range []string{"", ".", "..", "../escape", "nested/id", `nested\id`} {
 		if err := validateTaskID(id); err == nil {
@@ -101,6 +175,14 @@ func TestValidateTaskIDRejectsTraversal(t *testing.T) {
 	if err := validateTaskID("abc12"); err != nil {
 		t.Fatalf("validateTaskID(valid) = %v", err)
 	}
+}
+
+type fakeExec struct{}
+
+var _ executil.Runner = fakeExec{}
+
+func (fakeExec) Run(context.Context, string, ...string) ([]byte, error) {
+	return []byte(`{"chapters":[],"streams":[]}`), nil
 }
 
 func testItem(path string) media.Item {

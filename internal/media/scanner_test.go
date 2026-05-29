@@ -106,6 +106,34 @@ func TestScannerIncrementalRefreshesModifiedRelatedFile(t *testing.T) {
 	}
 }
 
+func TestScannerLoadCacheRestoresLastFinishedAt(t *testing.T) {
+	root := testMediaRoot(t)
+	cfg := testConfig(t, root)
+	video := filepath.Join(root, "Movies", "Example Movie (2026)", "Example Movie (2026).mkv")
+	writeFile(t, video, "video")
+
+	scanner := NewScanner(cfg)
+	idx, err := scanner.Scan(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cached := NewScanner(cfg)
+	if err := cached.LoadCache(); err != nil {
+		t.Fatal(err)
+	}
+	status := cached.Status()
+	if status.LastFinishedAt == nil {
+		t.Fatal("last finished time was not restored from cache")
+	}
+	if got, want := status.LastFinishedAt.Format(time.RFC3339Nano), idx.GeneratedAt.Format(time.RFC3339Nano); got != want {
+		t.Fatalf("last finished time = %s, want %s", got, want)
+	}
+	if status.Items != 1 {
+		t.Fatalf("items = %d, want 1", status.Items)
+	}
+}
+
 func testMediaRoot(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "Managed-Videos")

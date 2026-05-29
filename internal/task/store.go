@@ -299,7 +299,10 @@ func (s *Store) worker() {
 		cancel()
 		if err != nil {
 			_ = s.runner.fail(task, err)
+			s.upsertCache(task)
+			continue
 		}
+		s.upsertCache(task)
 	}
 }
 

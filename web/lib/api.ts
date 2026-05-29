@@ -44,6 +44,9 @@ export type ScanStatus = {
   error?: string;
   items: number;
   changed: number;
+  currentPath?: string;
+  dirsScanned: number;
+  filesScanned: number;
 };
 
 export type PublicConfig = {
@@ -115,6 +118,7 @@ export const api = {
   startScan: (force: boolean) => request<ScanStatus>("/scan", { method: "POST", body: JSON.stringify({ force }) }),
   media: () => request<{ items: MediaItem[]; count: number; status: ScanStatus }>("/media"),
   tasks: () => request<{ tasks: TranscodeTask[]; count: number }>("/tasks"),
+  task: (id: string) => request<TranscodeTask>(`/tasks/${id}`),
   createTask: (mediaId: string, params: TaskParams) =>
     request<TranscodeTask>("/tasks", { method: "POST", body: JSON.stringify({ mediaId, params }) }),
   cancelTask: (id: string) => request<TranscodeTask>(`/tasks/${id}/cancel`, { method: "POST", body: "{}" }),
