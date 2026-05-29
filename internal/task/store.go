@@ -52,18 +52,7 @@ func NewStore(cfg *config.Config, scanner *media.Scanner, runner *Runner) *Store
 func (s *Store) List(filter ListFilter) ([]Task, error) {
 	s.cacheMu.RLock()
 	cached := cloneTasks(s.cache)
-	cacheErr := s.cacheErr
-	refreshing := s.refreshing
 	s.cacheMu.RUnlock()
-	refreshWindow := s.cfg.TaskRefreshWindow
-	if refreshWindow <= 0 {
-		refreshWindow = 5 * time.Minute
-	}
-	if !refreshing && (len(cached) == 0 || time.Since(s.cacheAt) > refreshWindow) {
-		go func() {
-			_ = s.Refresh(context.Background())
-		}()
-	}
 	if filter.State == "" {
 		return cached, nil
 	}
@@ -72,9 +61,6 @@ func (s *Store) List(filter ListFilter) ([]Task, error) {
 		if task.State == filter.State {
 			filtered = append(filtered, task)
 		}
-	}
-	if cacheErr != "" && len(filtered) == 0 {
-		return filtered, nil
 	}
 	return filtered, nil
 }
@@ -112,7 +98,7 @@ func (s *Store) Refresh(ctx context.Context) error {
 		return err
 	}
 	s.cacheErr = ""
-	s.cache = compactTasks(tasks)
+	s.cache = cacheTasks(tasks)
 	return nil
 }
 
@@ -132,11 +118,11 @@ func (s *Store) scanOutput(ctx context.Context) ([]Task, error) {
 		if !entry.IsDir() {
 			continue
 		}
-		task, err := s.read(entry.Name(), false)
+		task, err := s.read(entry.Name(), true)
 		if err != nil {
 			continue
 		}
-		tasks = append(tasks, compactTask(*task))
+		tasks = append(tasks, *task)
 	}
 	sort.Slice(tasks, func(i, j int) bool {
 		return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt)
@@ -359,11 +345,11 @@ func (s *Store) upsertCache(task *Task) {
 	defer s.cacheMu.Unlock()
 	for i := range s.cache {
 		if s.cache[i].ID == task.ID {
-			s.cache[i] = compactTask(*task)
+			s.cache[i] = cacheTask(*task)
 			return
 		}
 	}
-	s.cache = append([]Task{compactTask(*task)}, s.cache...)
+	s.cache = append([]Task{cacheTask(*task)}, s.cache...)
 }
 
 func (s *Store) removeCache(id string) {
@@ -547,6 +533,20 @@ func compactTasks(tasks []Task) []Task {
 		out[i] = compactTask(task)
 	}
 	return out
+}
+
+func cacheTasks(tasks []Task) []Task {
+	out := make([]Task, len(tasks))
+	for i, task := range tasks {
+		out[i] = cacheTask(task)
+	}
+	return out
+}
+
+func cacheTask(task Task) Task {
+	task.SubtitleLangs = subtitleLanguages(task.Streams)
+	task.Media = nil
+	return task
 }
 
 func compactTask(task Task) Task {

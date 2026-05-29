@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   CircleAlert,
   Clapperboard,
-  FileSearch,
   Film,
   Filter,
   FolderSync,
@@ -37,6 +36,7 @@ import {
   type PublicConfig,
   type ScanStatus,
   type TaskParams,
+  type TaskStatus,
   type ToolReadiness,
   type TranscodeTask
 } from "@/lib/api";
@@ -57,10 +57,13 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 type LoadState = {
   config?: PublicConfig;
   scan?: ScanStatus;
+  taskStatus?: TaskStatus;
   tools: ToolReadiness[];
   media: MediaItem[];
   tasks: TranscodeTask[];
 };
+
+type MediaTaskIndex = Map<string, TranscodeTask>;
 
 const initialState: LoadState = {
   tools: [],
@@ -83,21 +86,30 @@ export function Dashboard() {
   const [codecFilters, setCodecFilters] = React.useState<string[]>([]);
   const [subtitleFilters, setSubtitleFilters] = React.useState<string[]>([]);
   const [deleteFilteredOpen, setDeleteFilteredOpen] = React.useState(false);
+  const [taskRefreshing, setTaskRefreshing] = React.useState(false);
+  const taskRefreshInFlight = React.useRef(false);
 
-  const refresh = React.useCallback(async () => {
+  const loadScanStatus = React.useCallback(async () => {
     try {
-      const [config, mediaResponse, taskResponse, scan, toolsResponse] = await Promise.all([
+      const scan = await api.scanStatus();
+      setState((current) => ({ ...current, scan }));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load scan status");
+    }
+  }, []);
+
+  const loadInitial = React.useCallback(async () => {
+    try {
+      const [config, scan, toolsResponse] = await Promise.all([
         api.config(),
-        api.media(),
-        api.tasks(),
         api.scanStatus(),
         api.tools()
       ]);
       setState((current) => ({
+        ...current,
         config,
         tools: toolsResponse.tools,
-        media: mediaResponse.items,
-        tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
         scan
       }));
       setError("");
@@ -107,10 +119,76 @@ export function Dashboard() {
   }, []);
 
   React.useEffect(() => {
-    refresh();
-    const interval = window.setInterval(refresh, 5000);
+    loadInitial();
+    const interval = window.setInterval(loadScanStatus, 5000);
     return () => window.clearInterval(interval);
-  }, [refresh]);
+  }, [loadInitial, loadScanStatus]);
+
+  const loadMedia = React.useCallback(async () => {
+    try {
+      const mediaResponse = await api.media();
+      setState((current) => ({
+        ...current,
+        media: mediaResponse.items,
+        scan: mediaResponse.status
+      }));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load library");
+    }
+  }, []);
+
+  const loadTasks = React.useCallback(async () => {
+    try {
+      const taskResponse = await api.tasks();
+      setState((current) => ({
+        ...current,
+        tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
+        taskStatus: taskResponse.status
+      }));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load tasks");
+    }
+  }, []);
+
+  const refreshTasks = React.useCallback(async () => {
+    if (taskRefreshInFlight.current) return;
+    taskRefreshInFlight.current = true;
+    setTaskRefreshing(true);
+    try {
+      const taskResponse = await api.refreshTasks();
+      setState((current) => ({
+        ...current,
+        tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
+        taskStatus: taskResponse.status
+      }));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Task refresh failed");
+    } finally {
+      taskRefreshInFlight.current = false;
+      setTaskRefreshing(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (activeTab === "library") {
+      void loadMedia();
+    }
+  }, [activeTab, loadMedia]);
+
+  React.useEffect(() => {
+    if (activeTab === "tasks") {
+      void refreshTasks();
+    }
+  }, [activeTab, refreshTasks]);
+
+  React.useEffect(() => {
+    if (activeTab !== "tasks") return;
+    const interval = window.setInterval(loadTasks, 5000);
+    return () => window.clearInterval(interval);
+  }, [activeTab, loadTasks]);
 
   const libraries = React.useMemo(() => Array.from(new Set(state.media.map((item) => item.library).filter(Boolean))).sort(), [state.media]);
   const filtered = React.useMemo(() => {
@@ -123,6 +201,7 @@ export function Dashboard() {
     });
   }, [kind, library, query, state.media]);
   const visibleMedia = React.useMemo(() => filtered.slice(0, mediaLimit), [filtered, mediaLimit]);
+  const mediaTaskIndex = React.useMemo(() => buildMediaTaskIndex(state.tasks), [state.tasks]);
   const taskCodecOptions = React.useMemo(() => taskOptions(state.tasks, taskCodecs), [state.tasks]);
   const taskSubtitleOptions = React.useMemo(() => taskOptions(state.tasks, taskSubtitleLanguages), [state.tasks]);
   const filteredTasks = React.useMemo(
@@ -131,6 +210,7 @@ export function Dashboard() {
   );
   const visibleTasks = React.useMemo(() => filteredTasks.slice(0, taskLimit), [filteredTasks, taskLimit]);
   const deletableFilteredTasks = React.useMemo(() => filteredTasks.filter(canDeleteTask), [filteredTasks]);
+  const tasksRefreshing = taskRefreshing || Boolean(state.taskStatus?.refreshing);
 
   React.useEffect(() => {
     setMediaLimit(150);
@@ -143,8 +223,11 @@ export function Dashboard() {
   const startScan = async (force: boolean) => {
     setBusy(true);
     try {
-      await api.startScan(force);
-      await refresh();
+      const scan = await api.startScan(force);
+      setState((current) => ({ ...current, scan }));
+      if (activeTab === "library") {
+        await loadMedia();
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");
     } finally {
@@ -155,10 +238,14 @@ export function Dashboard() {
   const createTask = async (item: MediaItem, params: TaskParams) => {
     setBusy(true);
     try {
-      await api.createTask(item.id, params);
+      const task = await api.createTask(item.id, params);
+      setState((current) => ({
+        ...current,
+        tasks: upsertTask(current.tasks, task)
+      }));
       setSelected(null);
       setActiveTab("tasks");
-      await refresh();
+      setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Task creation failed");
     } finally {
@@ -167,13 +254,29 @@ export function Dashboard() {
   };
 
   const cancelTask = async (id: string) => {
-    await api.cancelTask(id);
-    await refresh();
+    try {
+      const task = await api.cancelTask(id);
+      setState((current) => ({
+        ...current,
+        tasks: upsertTask(current.tasks, task)
+      }));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Task cancellation failed");
+    }
   };
 
   const retryTask = async (id: string) => {
-    await api.retryTask(id);
-    await refresh();
+    try {
+      const task = await api.retryTask(id);
+      setState((current) => ({
+        ...current,
+        tasks: upsertTask(current.tasks, task)
+      }));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Task retry failed");
+    }
   };
 
   const deleteTask = async (id: string) => {
@@ -184,7 +287,6 @@ export function Dashboard() {
         ...current,
         tasks: current.tasks.filter((task) => task.id !== id)
       }));
-      await refresh();
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Task deletion failed");
@@ -205,25 +307,11 @@ export function Dashboard() {
         tasks: current.tasks.filter((task) => !ids.includes(task.id) || failedIds.has(task.id))
       }));
       setDeleteFilteredOpen(false);
-      await refresh();
       setError(result.failures.length ? `${result.deleted} tasks deleted, ${result.failures.length} could not be deleted.` : "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Filtered delete failed");
     } finally {
       setBusy(false);
-    }
-  };
-
-  const loadTaskDetails = async (id: string) => {
-    try {
-      const details = await api.task(id);
-      setState((current) => ({
-        ...current,
-        tasks: current.tasks.map((task) => (task.id === id ? details : task))
-      }));
-      setError("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load task details");
     }
   };
 
@@ -292,7 +380,7 @@ export function Dashboard() {
                 setLibrary={setLibrary}
                 libraries={libraries}
               />
-              <LibraryView items={visibleMedia} onTranscode={setSelected} />
+              <LibraryView items={visibleMedia} taskIndex={mediaTaskIndex} onTranscode={setSelected} />
               {filtered.length > visibleMedia.length ? (
                 <div className="mt-5 flex justify-center">
                   <Tip content="Render the next batch of matching media">
@@ -316,10 +404,13 @@ export function Dashboard() {
                 filteredCount={filteredTasks.length}
                 totalCount={state.tasks.length}
                 deletableCount={deletableFilteredTasks.length}
+                onRefresh={refreshTasks}
+                refreshing={tasksRefreshing}
+                refreshedAt={state.taskStatus?.refreshedAt}
                 onDeleteFiltered={() => setDeleteFilteredOpen(true)}
-                disabled={busy}
+                disabled={busy || tasksRefreshing}
               />
-              <TaskView tasks={visibleTasks} busy={busy} onCancel={cancelTask} onRetry={retryTask} onDetails={loadTaskDetails} onDelete={deleteTask} />
+              <TaskView tasks={visibleTasks} busy={busy} onCancel={cancelTask} onRetry={retryTask} onDelete={deleteTask} />
               {filteredTasks.length > visibleTasks.length ? (
                 <div className="mt-5 flex justify-center">
                   <Tip content="Render the next batch of tasks">
@@ -468,6 +559,9 @@ function TaskToolbar({
   filteredCount,
   totalCount,
   deletableCount,
+  onRefresh,
+  refreshing,
+  refreshedAt,
   onDeleteFiltered,
   disabled
 }: {
@@ -482,6 +576,9 @@ function TaskToolbar({
   filteredCount: number;
   totalCount: number;
   deletableCount: number;
+  onRefresh: () => void;
+  refreshing: boolean;
+  refreshedAt?: string;
   onDeleteFiltered: () => void;
   disabled: boolean;
 }) {
@@ -496,6 +593,7 @@ function TaskToolbar({
             <Badge variant="outline">
               {filteredCount.toLocaleString()} of {totalCount.toLocaleString()}
             </Badge>
+            {refreshedAt ? <Badge variant="outline">Updated {formatDate(refreshedAt)}</Badge> : null}
             {hasFilters ? (
               <Tip content="Clear task filters">
                 <Button
@@ -547,12 +645,20 @@ function TaskToolbar({
             />
           </div>
         </div>
-        <Tip content="Delete every deletable task matching the current filters">
-          <Button variant="destructive" onClick={onDeleteFiltered} disabled={disabled || deletableCount === 0} className="w-full shrink-0 xl:w-auto">
-            <Trash2 />
-            Delete filtered
-          </Button>
-        </Tip>
+        <div className="flex w-full shrink-0 flex-col gap-2 sm:flex-row xl:w-auto">
+          <Tip content="Scan the output folder and reload task metadata">
+            <Button type="button" variant="secondary" onClick={onRefresh} disabled={disabled || refreshing} className="w-full sm:w-auto">
+              {refreshing ? <Loader2 className="animate-spin" /> : <RefreshCcw />}
+              Refresh
+            </Button>
+          </Tip>
+          <Tip content="Delete every deletable task matching the current filters">
+            <Button variant="destructive" onClick={onDeleteFiltered} disabled={disabled || deletableCount === 0} className="w-full sm:w-auto">
+              <Trash2 />
+              Delete filtered
+            </Button>
+          </Tip>
+        </div>
       </div>
     </div>
   );
@@ -599,7 +705,7 @@ function FilterGroup({
   );
 }
 
-function LibraryView({ items, onTranscode }: { items: MediaItem[]; onTranscode: (item: MediaItem) => void }) {
+function LibraryView({ items, taskIndex, onTranscode }: { items: MediaItem[]; taskIndex: MediaTaskIndex; onTranscode: (item: MediaItem) => void }) {
   const movies = items.filter((item) => item.kind === "movie");
   const shows = groupEpisodes(items.filter((item) => item.kind === "episode"));
   const unknown = items.filter((item) => item.kind === "unknown");
@@ -610,7 +716,7 @@ function LibraryView({ items, onTranscode }: { items: MediaItem[]; onTranscode: 
         <MediaSection title="Movies" icon={Film}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {movies.map((item) => (
-              <MediaCard item={item} key={item.id} onTranscode={onTranscode} />
+              <MediaCard item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={onTranscode} />
             ))}
           </div>
         </MediaSection>
@@ -626,7 +732,7 @@ function LibraryView({ items, onTranscode }: { items: MediaItem[]; onTranscode: 
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   {season.items.map((item) => (
-                    <EpisodeRow item={item} key={item.id} onTranscode={onTranscode} />
+                    <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={onTranscode} />
                   ))}
                 </div>
               </div>
@@ -638,7 +744,7 @@ function LibraryView({ items, onTranscode }: { items: MediaItem[]; onTranscode: 
         <MediaSection title="Unmatched" icon={Video}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {unknown.map((item) => (
-              <EpisodeRow item={item} key={item.id} onTranscode={onTranscode} />
+              <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={onTranscode} />
             ))}
           </div>
         </MediaSection>
@@ -660,7 +766,7 @@ function MediaSection({ title, icon: Icon, children }: { title: string; icon: Re
   );
 }
 
-function MediaCard({ item, onTranscode }: { item: MediaItem; onTranscode: (item: MediaItem) => void }) {
+function MediaCard({ item, task, onTranscode }: { item: MediaItem; task?: TranscodeTask; onTranscode: (item: MediaItem) => void }) {
   return (
     <motion.div layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
       <Card className="overflow-hidden">
@@ -675,6 +781,7 @@ function MediaCard({ item, onTranscode }: { item: MediaItem; onTranscode: (item:
               <MediaBadges item={item} />
             </div>
             <MetaLine item={item} />
+            <MediaTaskIndicator task={task} />
             <div className="mt-3 flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">{formatBytes(item.size)}</span>
               <Tip content="Create a transcoding task for this media file">
@@ -691,7 +798,7 @@ function MediaCard({ item, onTranscode }: { item: MediaItem; onTranscode: (item:
   );
 }
 
-function EpisodeRow({ item, onTranscode }: { item: MediaItem; onTranscode: (item: MediaItem) => void }) {
+function EpisodeRow({ item, task, onTranscode }: { item: MediaItem; task?: TranscodeTask; onTranscode: (item: MediaItem) => void }) {
   return (
     <motion.div layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
       <Card>
@@ -708,6 +815,7 @@ function EpisodeRow({ item, onTranscode }: { item: MediaItem; onTranscode: (item
               <MediaBadges item={item} />
             </div>
             <MetaLine item={item} />
+            <MediaTaskIndicator task={task} />
             <div className="mt-2 flex items-center justify-between gap-2">
               <span className="truncate text-xs text-muted-foreground">{item.ext.toUpperCase()} / {formatBytes(item.size)}</span>
               <Tip content="Create a transcoding task for this episode">
@@ -754,6 +862,25 @@ function MediaBadges({ item }: { item: MediaItem }) {
   );
 }
 
+function MediaTaskIndicator({ task }: { task?: TranscodeTask }) {
+  if (!task) return <div className="mt-2 min-h-6" aria-hidden="true" />;
+  const complete = task.state === "complete";
+  return (
+    <Tip content={`Task ${task.id} is ${task.state}`}>
+      <div className="mt-2 flex min-h-6 min-w-0 flex-wrap items-center gap-1.5">
+        <Badge variant="outline" className="shrink-0">
+          <ListVideo className="mr-1 size-3" />
+          In task
+        </Badge>
+        <Badge variant={complete ? "default" : "warning"} className="shrink-0">
+          {complete ? <CheckCircle2 className="mr-1 size-3" /> : <CircleAlert className="mr-1 size-3" />}
+          {complete ? "Complete" : "Incomplete"}
+        </Badge>
+      </div>
+    </Tip>
+  );
+}
+
 function MetaLine({ item }: { item: MediaItem }) {
   const parts = [item.show, item.season ? `S${String(item.season).padStart(2, "0")}` : "", formatDate(item.modTime)].filter(Boolean);
   return <p className="mt-2 truncate text-xs text-muted-foreground">{parts.join(" / ")}</p>;
@@ -764,14 +891,12 @@ function TaskView({
   busy,
   onCancel,
   onRetry,
-  onDetails,
   onDelete
 }: {
   tasks: TranscodeTask[];
   busy: boolean;
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
-  onDetails: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
   const [confirmingDelete, setConfirmingDelete] = React.useState("");
@@ -787,18 +912,10 @@ function TaskView({
                   <div className="min-w-0">
                     <div className="mb-2 flex flex-wrap items-center gap-2">
                       <CardTitle className="min-w-0 truncate">{task.input || task.inputRelPath || task.id}</CardTitle>
-                      <StateBadge state={task.state} />
-                      {task.legacy ? <Badge variant="outline">Legacy</Badge> : null}
                     </div>
                     <p className="truncate text-xs text-muted-foreground">{task.outputDir}</p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 md:justify-end">
-                    <Tip content="Load full task details and output file links">
-                      <Button variant="outline" size="sm" onClick={() => onDetails(task.id)}>
-                        <FileSearch />
-                        Details
-                      </Button>
-                    </Tip>
                     {task.state === "running" || task.state === "queued" ? (
                       <Tip content="Cancel this queued or running task">
                         <Button variant="destructive" size="sm" onClick={() => onCancel(task.id)}>
@@ -843,9 +960,14 @@ function TaskView({
                   <span>{task.encodedCodecs?.length ? task.encodedCodecs.join(", ") : "No encoded codec"}</span>
                   <span>{taskSubtitleLanguages(task).length ? `${taskSubtitleLanguages(task).join(", ")} subtitles` : "No subtitles"}</span>
                   <span>{task.duration ? `${Math.round(task.duration / 60)} min` : "Duration pending"}</span>
-                  <span>{task.files ? `${Object.keys(task.files).length} files` : task.state === "complete" ? "Details needed" : "Files pending"}</span>
+                  <span>{task.files ? `${Object.keys(task.files).length} files` : "Files pending"}</span>
                 </div>
-                {task.error ? <div className="mt-3 rounded-md border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-100">{task.error}</div> : null}
+                {task.error ? (
+                  <div className="mt-3 flex gap-2 rounded-md border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-100">
+                    <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+                    <span className="min-w-0 break-words">{task.error}</span>
+                  </div>
+                ) : null}
                 {task.files && Object.keys(task.files).length ? (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {Object.entries(task.files)
@@ -1096,11 +1218,6 @@ function Stat({ icon: Icon, label, value, detail }: { icon: React.ElementType; l
   );
 }
 
-function StateBadge({ state }: { state: string }) {
-  const variant = state === "complete" ? "default" : state === "failed" || state === "canceled" ? "danger" : state === "running" ? "warning" : "outline";
-  return <Badge variant={variant as "default"}>{state}</Badge>;
-}
-
 function EmptyState({ label }: { label: string }) {
   return (
     <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
@@ -1120,6 +1237,106 @@ function Tip({ content, children }: { content: string; children: React.ReactNode
 
 function countByState(tasks: TranscodeTask[], state: string) {
   return tasks.filter((task) => task.state === state).length;
+}
+
+function buildMediaTaskIndex(tasks: TranscodeTask[]) {
+  const index: MediaTaskIndex = new Map();
+  const newestFirst = [...tasks].sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+  for (const task of newestFirst) {
+    for (const key of taskMediaKeys(task)) {
+      if (!index.has(key)) {
+        index.set(key, task);
+      }
+    }
+  }
+  return index;
+}
+
+function taskForMedia(item: MediaItem, index: MediaTaskIndex) {
+  for (const key of mediaKeys(item)) {
+    const task = index.get(key);
+    if (task) return task;
+  }
+  return undefined;
+}
+
+function mediaKeys(item: MediaItem) {
+  const keys = [
+    taskKey("media", item.id),
+    taskKey("path", item.path),
+    taskKey("rel", item.relPath),
+    taskKey("file", item.fileName),
+    taskKey("base", stripMediaExtension(item.fileName))
+  ];
+  if (item.kind === "episode" && item.season != null && item.episode != null) {
+    keys.push(episodeKey(item.show || item.title, item.season, item.episode));
+  }
+  return uniqueKeys(keys);
+}
+
+function taskMediaKeys(task: TranscodeTask) {
+  const parentPath = task.inputParent && task.input ? `${task.inputParent}/${task.input}` : "";
+  const taskFile = task.input || fileNameFromPath(task.inputPath) || fileNameFromPath(task.inputRelPath);
+  const keys = [
+    taskKey("media", task.mediaId),
+    taskKey("path", task.inputPath),
+    taskKey("path", parentPath),
+    taskKey("rel", task.inputRelPath),
+    taskKey("file", taskFile),
+    taskKey("base", stripMediaExtension(taskFile))
+  ];
+  const episode = parseEpisodeIdentity(taskFile);
+  if (episode) {
+    keys.push(episodeKey(episode.show, episode.season, episode.episode));
+  }
+  return uniqueKeys(keys);
+}
+
+function taskKey(kind: string, value?: string) {
+  const normalized = normalizeMediaPath(value);
+  return normalized ? `${kind}:${normalized}` : "";
+}
+
+function normalizeMediaPath(value?: string) {
+  return value?.trim().replace(/\\/g, "/").replace(/\/+/g, "/").toLowerCase() ?? "";
+}
+
+function fileNameFromPath(value?: string) {
+  const normalized = value?.replace(/\\/g, "/") ?? "";
+  return normalized.split("/").filter(Boolean).pop() ?? "";
+}
+
+function stripMediaExtension(value?: string) {
+  return (value ?? "").replace(/\.[a-z0-9]{2,5}$/i, "");
+}
+
+function parseEpisodeIdentity(value?: string) {
+  const name = stripMediaExtension(fileNameFromPath(value) || value).replace(/[._]+/g, " ");
+  const match = name.match(/^(.*?)\s*[- ]*\s*S(\d{1,2})E(\d{1,3})\b/i);
+  if (!match) return undefined;
+  return {
+    show: match[1],
+    season: Number(match[2]),
+    episode: Number(match[3])
+  };
+}
+
+function episodeKey(show: string, season: number, episode: number) {
+  const normalizedShow = normalizeTitle(show);
+  return normalizedShow ? `episode:${normalizedShow}:${season}:${episode}` : "";
+}
+
+function normalizeTitle(value?: string) {
+  return (value ?? "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function uniqueKeys(keys: string[]) {
+  return Array.from(new Set(keys.filter(Boolean)));
 }
 
 function canDeleteTask(task: TranscodeTask) {
@@ -1208,6 +1425,16 @@ function mergeTaskDetails(next: TranscodeTask[], current: TranscodeTask[]) {
       subtitleLanguages: task.subtitleLanguages ?? existing.subtitleLanguages
     };
   });
+}
+
+function upsertTask(tasks: TranscodeTask[], next: TranscodeTask) {
+  let found = false;
+  const updated = tasks.map((task) => {
+    if (task.id !== next.id) return task;
+    found = true;
+    return mergeTaskDetails([next], [task])[0];
+  });
+  return found ? updated : [next, ...tasks];
 }
 
 function groupEpisodes(items: MediaItem[]) {

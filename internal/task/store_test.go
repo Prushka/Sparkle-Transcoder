@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +59,97 @@ func TestDecodeNewTaskJSON(t *testing.T) {
 	}
 	if got.Params.ExtractStreams == nil || !*got.Params.ExtractStreams {
 		t.Fatalf("extract streams = %+v, want true", got.Params.ExtractStreams)
+	}
+}
+
+func TestListDoesNotScanOutput(t *testing.T) {
+	output := t.TempDir()
+	task := &Task{
+		ID:        "abc12",
+		Input:     "movie.mkv",
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateComplete,
+		Params:    Params{},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := writeTask(task); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{cfg: &config.Config{Output: output}}
+	tasks, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("List returned %d tasks before explicit refresh, want 0", len(tasks))
+	}
+}
+
+func TestRefreshIncludesTaskDetails(t *testing.T) {
+	output := t.TempDir()
+	task := &Task{
+		ID:        "abc12",
+		Input:     "movie.mkv",
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateComplete,
+		Params:    Params{},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Streams:   []Stream{{CodecType: subtitleType, Language: "eng", Index: 2}},
+	}
+	if err := writeTask(task); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(task.OutputDir, "hevc.mp4"), []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{cfg: &config.Config{Output: output}}
+	if err := store.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %d, want 1", len(tasks))
+	}
+	if len(tasks[0].Streams) != 1 {
+		t.Fatalf("streams = %+v, want task details", tasks[0].Streams)
+	}
+	if tasks[0].Files["hevc.mp4"] != int64(len("video")) {
+		t.Fatalf("files = %+v, want output file size", tasks[0].Files)
+	}
+}
+
+func TestFailPersistsErrorReason(t *testing.T) {
+	output := t.TempDir()
+	task := &Task{
+		ID:        "abc12",
+		Input:     "movie.mkv",
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateRunning,
+		Params:    Params{},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := os.MkdirAll(task.OutputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewRunner(&config.Config{}, nil, fakeExec{})
+	if err := runner.fail(task, errors.New("HandBrakeCLI failed: encoder unavailable")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeTask(mustReadFile(t, filepath.Join(task.OutputDir, JobFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateFailed {
+		t.Fatalf("state = %s, want %s", got.State, StateFailed)
+	}
+	if !strings.Contains(got.Error, "encoder unavailable") {
+		t.Fatalf("error = %q, want failure reason", got.Error)
 	}
 }
 
@@ -267,6 +359,15 @@ func TestCompactTaskIncludesSubtitleLanguages(t *testing.T) {
 	if got.Streams != nil {
 		t.Fatalf("compact task kept streams: %+v", got.Streams)
 	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return content
 }
 
 type fakeExec struct{}

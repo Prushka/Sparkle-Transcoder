@@ -252,12 +252,14 @@ func (s *Server) listTasks(c echo.Context) error {
 }
 
 func (s *Server) refreshTasks(c echo.Context) error {
-	go func() {
-		if err := s.tasks.Refresh(context.Background()); err != nil {
-			log.Errorf("task refresh failed: %v", err)
-		}
-	}()
-	return c.JSON(http.StatusAccepted, s.tasks.Status())
+	if err := s.tasks.Refresh(c.Request().Context()); err != nil {
+		return err
+	}
+	tasks, err := s.tasks.List(task.ListFilter{State: c.QueryParam("state")})
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"tasks": tasks, "count": len(tasks), "status": s.tasks.Status()})
 }
 
 func (s *Server) getTask(c echo.Context) error {

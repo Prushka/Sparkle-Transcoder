@@ -89,6 +89,7 @@ export type TranscodeTask = {
   mediaId?: string;
   inputPath: string;
   inputRelPath?: string;
+  inputParent?: string;
   input: string;
   outputDir: string;
   state: string;
@@ -106,6 +107,18 @@ export type TranscodeTask = {
   height?: number;
   files?: Record<string, number>;
   legacy?: boolean;
+};
+
+export type TaskStatus = {
+  refreshing: boolean;
+  refreshedAt?: string;
+  error?: string;
+};
+
+export type TaskListResponse = {
+  tasks: TranscodeTask[];
+  count: number;
+  status: TaskStatus;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -129,7 +142,8 @@ export const api = {
   scanStatus: () => request<ScanStatus>("/scan"),
   startScan: (force: boolean) => request<ScanStatus>("/scan", { method: "POST", body: JSON.stringify({ force }) }),
   media: () => request<{ items: MediaItem[]; count: number; status: ScanStatus }>("/media"),
-  tasks: () => request<{ tasks: TranscodeTask[]; count: number }>("/tasks"),
+  tasks: () => request<TaskListResponse>("/tasks"),
+  refreshTasks: () => request<TaskListResponse>("/tasks/refresh", { method: "POST", body: "{}" }),
   task: (id: string) => request<TranscodeTask>(`/tasks/${id}`),
   createTask: (mediaId: string, params: TaskParams) =>
     request<TranscodeTask>("/tasks", { method: "POST", body: JSON.stringify({ mediaId, params }) }),
