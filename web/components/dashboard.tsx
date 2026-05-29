@@ -89,28 +89,16 @@ export function Dashboard() {
   const [taskRefreshing, setTaskRefreshing] = React.useState(false);
   const taskRefreshInFlight = React.useRef(false);
 
-  const loadScanStatus = React.useCallback(async () => {
-    try {
-      const scan = await api.scanStatus();
-      setState((current) => ({ ...current, scan }));
-      setError("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load scan status");
-    }
-  }, []);
-
   const loadInitial = React.useCallback(async () => {
     try {
-      const [config, scan, toolsResponse] = await Promise.all([
+      const [config, toolsResponse] = await Promise.all([
         api.config(),
-        api.scanStatus(),
         api.tools()
       ]);
       setState((current) => ({
         ...current,
         config,
-        tools: toolsResponse.tools,
-        scan
+        tools: toolsResponse.tools
       }));
       setError("");
     } catch (err) {
@@ -120,16 +108,16 @@ export function Dashboard() {
 
   React.useEffect(() => {
     loadInitial();
-    const interval = window.setInterval(loadScanStatus, 5000);
-    return () => window.clearInterval(interval);
-  }, [loadInitial, loadScanStatus]);
+  }, [loadInitial]);
 
-  const loadMedia = React.useCallback(async () => {
+  const loadLibrary = React.useCallback(async () => {
     try {
-      const mediaResponse = await api.media();
+      const [mediaResponse, taskResponse] = await Promise.all([api.media(), api.tasks()]);
       setState((current) => ({
         ...current,
         media: mediaResponse.items,
+        tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
+        taskStatus: taskResponse.status,
         scan: mediaResponse.status
       }));
       setError("");
@@ -140,11 +128,12 @@ export function Dashboard() {
 
   const loadTasks = React.useCallback(async () => {
     try {
-      const taskResponse = await api.tasks();
+      const [taskResponse, scan] = await Promise.all([api.tasks(), api.scanStatus()]);
       setState((current) => ({
         ...current,
         tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
-        taskStatus: taskResponse.status
+        taskStatus: taskResponse.status,
+        scan
       }));
       setError("");
     } catch (err) {
@@ -174,20 +163,14 @@ export function Dashboard() {
 
   React.useEffect(() => {
     if (activeTab === "library") {
-      void loadMedia();
+      void loadLibrary();
     }
-  }, [activeTab, loadMedia]);
+  }, [activeTab, loadLibrary]);
 
   React.useEffect(() => {
     if (activeTab === "tasks") {
-      void refreshTasks();
+      void loadTasks();
     }
-  }, [activeTab, refreshTasks]);
-
-  React.useEffect(() => {
-    if (activeTab !== "tasks") return;
-    const interval = window.setInterval(loadTasks, 5000);
-    return () => window.clearInterval(interval);
   }, [activeTab, loadTasks]);
 
   const libraries = React.useMemo(() => Array.from(new Set(state.media.map((item) => item.library).filter(Boolean))).sort(), [state.media]);
@@ -226,7 +209,7 @@ export function Dashboard() {
       const scan = await api.startScan(force);
       setState((current) => ({ ...current, scan }));
       if (activeTab === "library") {
-        await loadMedia();
+        await loadLibrary();
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");
