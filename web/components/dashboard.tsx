@@ -816,9 +816,9 @@ function TaskToolbar({
   const hasFilters = query.trim() !== "" || completion !== "all" || hasTriStateFilters(taskStatusFilters) || hasTriStateFilters(codecFilters) || hasTriStateFilters(subtitleFilters);
   return (
     <div className="mb-4 rounded-lg border bg-card/60 p-3">
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+      <div className="mb-3 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0 flex-1">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Filter className="size-4 text-primary" />
             <span className="text-sm font-medium">Task filters</span>
             <Badge variant="outline">
@@ -846,7 +846,7 @@ function TaskToolbar({
               </Tip>
             ) : null}
           </div>
-          <div className="relative mb-3 max-w-xl">
+          <div className="relative mt-3 max-w-xl">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={query}
@@ -855,59 +855,59 @@ function TaskToolbar({
               placeholder="Search task, file, path, state, codec, subtitle"
             />
           </div>
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,220px)_minmax(0,220px)_minmax(0,260px)_minmax(0,1fr)]">
-            <div>
-              <div className="mb-1 text-xs font-medium text-muted-foreground">Completion</div>
-              <div className="flex flex-wrap gap-2">
-                {[
-                  ["all", "All"],
-                  ["incomplete", "Incomplete"],
-                  ["complete", "Completed"]
-                ].map(([value, label]) => (
-                  <Button
-                    key={value}
-                    type="button"
-                    variant={completion === value ? "default" : "outline"}
-                    size="sm"
-                    className="h-7"
-                    onClick={() => onCompletionChange(value)}
-                  >
-                    {label}
-                  </Button>
-                ))}
-              </div>
-            </div>
-            <TriStateFilterGroup
-              title="Task Status"
-              options={[IN_PROGRESS_FILTER, NEW_VERSION_FILTER]}
-              filters={taskStatusFilters}
-              onChange={onTaskStatusFiltersChange}
-              emptyLabel="No task status options"
-            />
-            <TriStateFilterGroup title="Encoded codecs" options={codecOptions} filters={codecFilters} onChange={onCodecFiltersChange} emptyLabel="No encoded codecs yet" />
-            <TriStateFilterGroup
-              title="Subtitle languages"
-              options={subtitleOptions}
-              filters={subtitleFilters}
-              onChange={onSubtitleFiltersChange}
-              emptyLabel="No subtitle languages yet"
-            />
-          </div>
         </div>
-        <div className="flex w-full shrink-0 flex-col gap-2 sm:flex-row xl:w-auto">
+        <div className="flex shrink-0 flex-wrap gap-2 xl:justify-end">
           <Tip content="Scan the output folder and reload task metadata">
-            <Button type="button" variant="secondary" onClick={onRefresh} disabled={disabled || refreshing} className="w-full sm:w-auto">
+            <Button type="button" variant="secondary" onClick={onRefresh} disabled={disabled || refreshing}>
               {refreshing ? <Loader2 className="animate-spin" /> : <RefreshCcw />}
               Refresh
             </Button>
           </Tip>
           <Tip content="Delete every deletable task matching the current filters">
-            <Button variant="destructive" onClick={onDeleteFiltered} disabled={disabled || deletableCount === 0} className="w-full sm:w-auto">
+            <Button variant="destructive" onClick={onDeleteFiltered} disabled={disabled || deletableCount === 0}>
               <Trash2 />
               Delete filtered
             </Button>
           </Tip>
         </div>
+      </div>
+      <div className="grid w-full gap-3 lg:grid-cols-[minmax(0,220px)_minmax(0,220px)_minmax(0,260px)_minmax(0,1fr)]">
+        <div>
+          <div className="mb-1 text-xs font-medium text-muted-foreground">Completion</div>
+          <div className="flex flex-wrap gap-2">
+            {[
+              ["all", "All"],
+              ["incomplete", "Incomplete"],
+              ["complete", "Completed"]
+            ].map(([value, label]) => (
+              <Button
+                key={value}
+                type="button"
+                variant={completion === value ? "default" : "outline"}
+                size="sm"
+                className="h-7"
+                onClick={() => onCompletionChange(value)}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+        </div>
+        <TriStateFilterGroup
+          title="Task Status"
+          options={[IN_PROGRESS_FILTER, NEW_VERSION_FILTER]}
+          filters={taskStatusFilters}
+          onChange={onTaskStatusFiltersChange}
+          emptyLabel="No task status options"
+        />
+        <TriStateFilterGroup title="Encoded codecs" options={codecOptions} filters={codecFilters} onChange={onCodecFiltersChange} emptyLabel="No encoded codecs yet" />
+        <TriStateFilterGroup
+          title="Subtitle languages"
+          options={subtitleOptions}
+          filters={subtitleFilters}
+          onChange={onSubtitleFiltersChange}
+          emptyLabel="No subtitle languages yet"
+        />
       </div>
     </div>
   );
