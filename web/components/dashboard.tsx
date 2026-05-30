@@ -68,6 +68,10 @@ type LoadState = {
 
 type MediaTaskIndex = Map<string, TranscodeTask>;
 type CurrentMediaIndex = Map<string, MediaItem>;
+type NewVersionInfo = {
+  originalSize: number;
+  currentSize: number;
+};
 type QueueCreateMode = "replace" | "incomplete";
 type QueueMode = QueueCreateMode | "delete";
 type TriStateFilterState = "include" | "exclude";
@@ -122,7 +126,7 @@ export function Dashboard() {
   const [taskCompletion, setTaskCompletion] = React.useState("all");
   const [taskStatusFilters, setTaskStatusFilters] = React.useState<TriStateFilters>({});
   const [codecFilters, setCodecFilters] = React.useState<TriStateFilters>({});
-  const [subtitleFilters, setSubtitleFilters] = React.useState<string[]>([]);
+  const [subtitleFilters, setSubtitleFilters] = React.useState<TriStateFilters>({});
   const [deleteFilteredOpen, setDeleteFilteredOpen] = React.useState(false);
   const [taskRefreshing, setTaskRefreshing] = React.useState(false);
   const taskRefreshInFlight = React.useRef(false);
@@ -593,7 +597,7 @@ export function Dashboard() {
                 onDeleteFiltered={() => setDeleteFilteredOpen(true)}
                 disabled={busy || tasksRefreshing}
               />
-              <TaskView tasks={visibleTasks} busy={busy} onCancel={cancelTask} onRetry={retryTask} onDelete={deleteTask} />
+              <TaskView tasks={visibleTasks} currentMediaIndex={currentMediaIndex} busy={busy} onCancel={cancelTask} onRetry={retryTask} onDelete={deleteTask} />
               {filteredTasks.length > visibleTasks.length ? (
                 <div className="mt-5 flex justify-center">
                   <Tip content="Render the next batch of tasks">
@@ -798,8 +802,8 @@ function TaskToolbar({
   codecFilters: TriStateFilters;
   onCodecFiltersChange: (value: TriStateFilters) => void;
   subtitleOptions: string[];
-  subtitleFilters: string[];
-  onSubtitleFiltersChange: (value: string[]) => void;
+  subtitleFilters: TriStateFilters;
+  onSubtitleFiltersChange: (value: TriStateFilters) => void;
   filteredCount: number;
   totalCount: number;
   deletableCount: number;
@@ -809,7 +813,7 @@ function TaskToolbar({
   onDeleteFiltered: () => void;
   disabled: boolean;
 }) {
-  const hasFilters = query.trim() !== "" || completion !== "all" || hasTriStateFilters(taskStatusFilters) || hasTriStateFilters(codecFilters) || subtitleFilters.length > 0;
+  const hasFilters = query.trim() !== "" || completion !== "all" || hasTriStateFilters(taskStatusFilters) || hasTriStateFilters(codecFilters) || hasTriStateFilters(subtitleFilters);
   return (
     <div className="mb-4 rounded-lg border bg-card/60 p-3">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -833,7 +837,7 @@ function TaskToolbar({
                     onCompletionChange("all");
                     onTaskStatusFiltersChange({});
                     onCodecFiltersChange({});
-                    onSubtitleFiltersChange([]);
+                    onSubtitleFiltersChange({});
                   }}
                 >
                   <X />
@@ -851,7 +855,7 @@ function TaskToolbar({
               placeholder="Search task, file, path, state, codec, subtitle"
             />
           </div>
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,220px)_minmax(0,220px)_minmax(0,1fr)_minmax(0,1fr)]">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,220px)_minmax(0,220px)_minmax(0,260px)_minmax(0,1fr)]">
             <div>
               <div className="mb-1 text-xs font-medium text-muted-foreground">Completion</div>
               <div className="flex flex-wrap gap-2">
@@ -881,10 +885,10 @@ function TaskToolbar({
               emptyLabel="No task status options"
             />
             <TriStateFilterGroup title="Encoded codecs" options={codecOptions} filters={codecFilters} onChange={onCodecFiltersChange} emptyLabel="No encoded codecs yet" />
-            <FilterGroup
+            <TriStateFilterGroup
               title="Subtitle languages"
               options={subtitleOptions}
-              selected={subtitleFilters}
+              filters={subtitleFilters}
               onChange={onSubtitleFiltersChange}
               emptyLabel="No subtitle languages yet"
             />
@@ -904,47 +908,6 @@ function TaskToolbar({
             </Button>
           </Tip>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function FilterGroup({
-  title,
-  options,
-  selected,
-  onChange,
-  emptyLabel
-}: {
-  title: string;
-  options: string[];
-  selected: string[];
-  onChange: (value: string[]) => void;
-  emptyLabel: string;
-}) {
-  return (
-    <div className="min-w-0">
-      <div className="mb-1 text-xs font-medium text-muted-foreground">{title}</div>
-      <div className="flex min-h-7 flex-wrap gap-2">
-        {options.length ? (
-          options.map((option) => {
-            const active = selected.includes(option);
-            return (
-              <Button
-                key={option}
-                type="button"
-                variant={active ? "default" : "outline"}
-                size="sm"
-                className="h-7 max-w-full px-2"
-                onClick={() => onChange(active ? selected.filter((value) => value !== option) : [...selected, option])}
-              >
-                <span className="truncate">{option}</span>
-              </Button>
-            );
-          })
-        ) : (
-          <span className="text-xs text-muted-foreground">{emptyLabel}</span>
-        )}
       </div>
     </div>
   );
@@ -1139,8 +1102,8 @@ function MediaCard({
   onDeleteTask: (id: string) => void;
 }) {
   return (
-    <motion.div layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
-      <Card className="overflow-hidden">
+    <motion.div className="h-full" layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
+      <Card className="h-full overflow-hidden">
         <div className="grid grid-cols-[92px_minmax(0,1fr)]">
           <Poster item={item} className="aspect-auto h-full min-h-36 w-full rounded-none border-y-0 border-l-0 border-r" />
           <div className="min-w-0 p-3">
@@ -1186,8 +1149,8 @@ function EpisodeRow({
   onDeleteTask: (id: string) => void;
 }) {
   return (
-    <motion.div layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
-      <Card>
+    <motion.div className="h-full" layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
+      <Card className="h-full">
         <CardContent className="flex gap-3 p-3">
           <Poster item={item} className="size-20 shrink-0" />
           <div className="min-w-0 flex-1">
@@ -1252,16 +1215,16 @@ function MediaBadges({ item }: { item: MediaItem }) {
 }
 
 function MediaTaskIndicator({ item, task }: { item: MediaItem; task?: TranscodeTask }) {
-  if (!task) return <div className="mt-2 min-h-6" aria-hidden="true" />;
+  if (!task) return <div className="mt-2 min-h-12" aria-hidden="true" />;
   const complete = task.state === "complete";
   const inProgress = isInProgressTask(task);
-  const newVersion = mediaHasNewVersion(item, task);
+  const newVersion = newVersionInfoForMedia(item, task);
   const taskTip = newVersion
-    ? `Task ${task.id} is ${task.state}. Current media is ${formatBytes(item.size)}; task original was ${formatBytes(originalMediaSize(task) ?? 0)}.`
+    ? `Task ${task.id} is ${task.state}. Current media is ${formatVersionBytes(newVersion.currentSize)}; task original was ${formatVersionBytes(newVersion.originalSize)}.`
     : `Task ${task.id} is ${task.state}`;
   return (
     <Tip content={taskTip}>
-      <div className="mt-2 flex min-h-6 min-w-0 flex-wrap items-center gap-1.5">
+      <div className="mt-2 flex min-h-12 min-w-0 flex-wrap items-start gap-1.5">
         <Badge variant="outline" className="shrink-0">
           <ListVideo className="mr-1 size-3" />
           In task
@@ -1270,14 +1233,18 @@ function MediaTaskIndicator({ item, task }: { item: MediaItem; task?: TranscodeT
           {complete ? <CheckCircle2 className="mr-1 size-3" /> : inProgress ? <Loader2 className="mr-1 size-3 animate-spin" /> : <CircleAlert className="mr-1 size-3" />}
           {complete ? "Complete" : inProgress ? "In progress" : "Incomplete"}
         </Badge>
-        {newVersion ? (
-          <Badge variant="warning" className="shrink-0">
-            <CircleAlert className="mr-1 size-3" />
-            New version
-          </Badge>
-        ) : null}
+        {newVersion ? <NewVersionBadge info={newVersion} /> : null}
       </div>
     </Tip>
+  );
+}
+
+function NewVersionBadge({ info }: { info: NewVersionInfo }) {
+  return (
+    <Badge variant="warning" className="shrink-0">
+      <CircleAlert className="mr-1 size-3" />
+      New Version [{formatVersionBytes(info.originalSize)} / {formatVersionBytes(info.currentSize)}]
+    </Badge>
   );
 }
 
@@ -1320,12 +1287,14 @@ function MetaLine({ item }: { item: MediaItem }) {
 
 function TaskView({
   tasks,
+  currentMediaIndex,
   busy,
   onCancel,
   onRetry,
   onDelete
 }: {
   tasks: TranscodeTask[];
+  currentMediaIndex: CurrentMediaIndex;
   busy: boolean;
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
@@ -1336,91 +1305,95 @@ function TaskView({
   return (
     <div className="space-y-3">
       <AnimatePresence initial={false}>
-        {tasks.map((task) => (
-          <motion.div key={task.id} layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-            <Card>
-              <CardHeader className="pb-3">
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div className="min-w-0">
-                    <div className="mb-2 flex flex-wrap items-center gap-2">
-                      <CardTitle className="min-w-0 truncate">{task.input || task.inputRelPath || task.id}</CardTitle>
+        {tasks.map((task) => {
+          const newVersion = newVersionInfoForTask(task, currentMediaIndex);
+          return (
+            <motion.div key={task.id} layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0">
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <CardTitle className="min-w-0 truncate">{task.input || task.inputRelPath || task.id}</CardTitle>
+                        {newVersion ? <NewVersionBadge info={newVersion} /> : null}
+                      </div>
+                      <p className="truncate text-xs text-muted-foreground">{task.outputDir}</p>
                     </div>
-                    <p className="truncate text-xs text-muted-foreground">{task.outputDir}</p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 md:justify-end">
-                    {isInProgressTask(task) ? (
-                      <Tip content="Cancel this in-progress task">
-                        <Button variant="destructive" size="sm" onClick={() => onCancel(task.id)}>
-                          <Ban />
-                          Cancel
-                        </Button>
-                      </Tip>
-                    ) : null}
-                    {task.state === "failed" || task.state === "canceled" ? (
-                      <Tip content="Queue this task again with the same parameters">
-                        <Button variant="secondary" size="sm" onClick={() => onRetry(task.id)}>
-                          <RotateCcw />
-                          Retry
-                        </Button>
-                      </Tip>
-                    ) : null}
-                    <Tip content={canDeleteTask(task) ? "Click once more to delete this task folder" : "Cancel in-progress tasks before deleting"}>
-                      <Button
-                        variant={confirmingDelete === task.id ? "destructive" : "outline"}
-                        size="sm"
-                        disabled={busy || !canDeleteTask(task)}
-                        onClick={() => {
-                          if (confirmingDelete === task.id) {
-                            setConfirmingDelete("");
-                            onDelete(task.id);
-                            return;
-                          }
-                          setConfirmingDelete(task.id);
-                        }}
-                      >
-                        <Trash2 />
-                        {confirmingDelete === task.id ? "Confirm" : "Delete"}
-                      </Button>
-                    </Tip>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <Progress value={stateProgress(task.state)} />
-                <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-5">
-                  <span>Updated {formatDate(task.updatedAt)}</span>
-                  <span>{task.encodedCodecs?.length ? task.encodedCodecs.join(", ") : "No encoded codec"}</span>
-                  <span>{taskSubtitleLanguages(task).length ? `${taskSubtitleLanguages(task).join(", ")} subtitles` : "No subtitles"}</span>
-                  <span>{task.duration ? `${Math.round(task.duration / 60)} min` : "Duration pending"}</span>
-                  <span>{task.files ? `${Object.keys(task.files).length} files` : "Files pending"}</span>
-                </div>
-                {task.error ? (
-                  <div className="mt-3 flex gap-2 rounded-md border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-100">
-                    <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
-                    <span className="min-w-0 break-words">{task.error}</span>
-                  </div>
-                ) : null}
-                {task.files && Object.keys(task.files).length ? (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {Object.entries(task.files)
-                      .slice(0, 8)
-                      .map(([name, size]) => (
-                        <a
-                          className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                          href={outputUrl(task, name)}
-                          target="_blank"
-                          rel="noreferrer"
-                          key={name}
+                    <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                      {isInProgressTask(task) ? (
+                        <Tip content="Cancel this in-progress task">
+                          <Button variant="destructive" size="sm" onClick={() => onCancel(task.id)}>
+                            <Ban />
+                            Cancel
+                          </Button>
+                        </Tip>
+                      ) : null}
+                      {task.state === "failed" || task.state === "canceled" ? (
+                        <Tip content="Queue this task again with the same parameters">
+                          <Button variant="secondary" size="sm" onClick={() => onRetry(task.id)}>
+                            <RotateCcw />
+                            Retry
+                          </Button>
+                        </Tip>
+                      ) : null}
+                      <Tip content={canDeleteTask(task) ? "Click once more to delete this task folder" : "Cancel in-progress tasks before deleting"}>
+                        <Button
+                          variant={confirmingDelete === task.id ? "destructive" : "outline"}
+                          size="sm"
+                          disabled={busy || !canDeleteTask(task)}
+                          onClick={() => {
+                            if (confirmingDelete === task.id) {
+                              setConfirmingDelete("");
+                              onDelete(task.id);
+                              return;
+                            }
+                            setConfirmingDelete(task.id);
+                          }}
                         >
-                          {name} / {formatBytes(size)}
-                        </a>
-                      ))}
+                          <Trash2 />
+                          {confirmingDelete === task.id ? "Confirm" : "Delete"}
+                        </Button>
+                      </Tip>
+                    </div>
                   </div>
-                ) : null}
-              </CardContent>
-            </Card>
-          </motion.div>
-        ))}
+                </CardHeader>
+                <CardContent>
+                  <Progress value={stateProgress(task.state)} />
+                  <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-5">
+                    <span>Updated {formatDate(task.updatedAt)}</span>
+                    <span>{task.encodedCodecs?.length ? task.encodedCodecs.join(", ") : "No encoded codec"}</span>
+                    <span>{taskSubtitleLanguages(task).length ? `${taskSubtitleLanguages(task).join(", ")} subtitles` : "No subtitles"}</span>
+                    <span>{task.duration ? `${Math.round(task.duration / 60)} min` : "Duration pending"}</span>
+                    <span>{task.files ? `${Object.keys(task.files).length} files` : "Files pending"}</span>
+                  </div>
+                  {task.error ? (
+                    <div className="mt-3 flex gap-2 rounded-md border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-100">
+                      <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+                      <span className="min-w-0 break-words">{task.error}</span>
+                    </div>
+                  ) : null}
+                  {task.files && Object.keys(task.files).length ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {Object.entries(task.files)
+                        .slice(0, 8)
+                        .map(([name, size]) => (
+                          <a
+                            className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                            href={outputUrl(task, name)}
+                            target="_blank"
+                            rel="noreferrer"
+                            key={name}
+                          >
+                            {name} / {formatBytes(size)}
+                          </a>
+                        ))}
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
+            </motion.div>
+          );
+        })}
       </AnimatePresence>
       {!tasks.length ? <EmptyState label="No tasks found" /> : null}
     </div>
@@ -2015,14 +1988,35 @@ function originalMediaSize(task: TranscodeTask) {
   return undefined;
 }
 
-function mediaHasNewVersion(item: MediaItem, task: TranscodeTask) {
+function newVersionInfoForMedia(item: MediaItem, task: TranscodeTask): NewVersionInfo | undefined {
   const originalSize = originalMediaSize(task);
-  return typeof originalSize === "number" && item.size !== originalSize;
+  if (typeof originalSize !== "number" || item.size === originalSize) return undefined;
+  return {
+    originalSize,
+    currentSize: item.size
+  };
+}
+
+function newVersionInfoForTask(task: TranscodeTask, index: CurrentMediaIndex) {
+  const item = mediaForTask(task, index);
+  return item ? newVersionInfoForMedia(item, task) : undefined;
 }
 
 function taskHasNewVersion(task: TranscodeTask, index: CurrentMediaIndex) {
-  const item = mediaForTask(task, index);
-  return item ? mediaHasNewVersion(item, task) : false;
+  return Boolean(newVersionInfoForTask(task, index));
+}
+
+function formatVersionBytes(bytes: number) {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  if (unit === 0) return `${bytes} B`;
+  return `${value.toFixed(2)} ${units[unit]}`;
 }
 
 function canDeleteTask(task: TranscodeTask) {
@@ -2050,7 +2044,7 @@ function filterTasks(
   completion: string,
   taskStatusFilters: TriStateFilters,
   codecFilters: TriStateFilters,
-  subtitleFilters: string[],
+  subtitleFilters: TriStateFilters,
   currentMediaIndex: CurrentMediaIndex
 ) {
   return tasks.filter((task) => {
@@ -2061,7 +2055,7 @@ function filterTasks(
     const codecs = taskCodecs(task);
     if (!taskMatchesCodecFilters(codecs, codecFilters)) return false;
     const subtitles = taskSubtitleLanguages(task);
-    if (subtitleFilters.length && !subtitleFilters.some((language) => subtitles.includes(language))) return false;
+    if (!taskMatchesSubtitleFilters(subtitles, subtitleFilters)) return false;
     return true;
   });
 }
@@ -2097,6 +2091,14 @@ function taskMatchesCodecFilters(codecs: string[], filters: TriStateFilters) {
   const excluded = triStateFiltersByState(filters, "exclude");
   if (included.length && !included.some((codec) => codecs.includes(codec))) return false;
   if (excluded.some((codec) => codecs.includes(codec))) return false;
+  return true;
+}
+
+function taskMatchesSubtitleFilters(subtitles: string[], filters: TriStateFilters) {
+  const included = triStateFiltersByState(filters, "include");
+  const excluded = triStateFiltersByState(filters, "exclude");
+  if (included.length && !included.some((language) => subtitles.includes(language))) return false;
+  if (excluded.some((language) => subtitles.includes(language))) return false;
   return true;
 }
 
