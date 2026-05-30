@@ -64,7 +64,8 @@ type LoadState = {
 };
 
 type MediaTaskIndex = Map<string, TranscodeTask>;
-type QueueMode = "replace" | "incomplete";
+type QueueCreateMode = "replace" | "incomplete";
+type QueueMode = QueueCreateMode | "delete";
 type TriStateFilterState = "include" | "exclude";
 type TriStateFilters = Record<string, TriStateFilterState>;
 
@@ -275,7 +276,7 @@ export function Dashboard() {
     });
   }, [state.tasks]);
 
-  const createTasks = async (selection: TaskSelection, params: TaskParams, queueMode: QueueMode) => {
+  const createTasks = async (selection: TaskSelection, params: TaskParams, queueMode: QueueCreateMode) => {
     const plan = buildQueuePlan(selection.items, state.tasks, selection.bulk ? queueMode : "replace");
     if (!plan.items.length) {
       setSelected(null);
@@ -381,6 +382,34 @@ export function Dashboard() {
     }
   };
 
+  const deleteSelectionTasks = async (selection: TaskSelection) => {
+    const existingTasks = existingTasksForMedia(selection.items, state.tasks);
+    if (!existingTasks.length) return;
+    const runningTasks = existingTasks.filter((task) => !canDeleteTask(task));
+    if (runningTasks.length) {
+      setError(`${runningTasks.length.toLocaleString()} existing task${runningTasks.length === 1 ? " is" : "s are"} in progress and cannot be deleted yet. Cancel or wait for ${runningTasks.length === 1 ? "it" : "them"} before deleting task folders.`);
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const ids = existingTasks.map((task) => task.id);
+      const result = await api.deleteTasks(ids);
+      const failedIds = new Set(result.failures.map((failure) => failure.id));
+      const deletedIds = new Set(ids.filter((id) => !failedIds.has(id)));
+      setState((current) => ({
+        ...current,
+        tasks: current.tasks.filter((task) => !deletedIds.has(task.id))
+      }));
+      setSelected(null);
+      setError(result.failures.length ? `${result.deleted.toLocaleString()} task ${pluralize("folder", result.deleted)} deleted, ${result.failures.length.toLocaleString()} could not be deleted. ${result.failures[0].error}` : "");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Task deletion failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const deleteFilteredTasks = async () => {
     const ids = deletableFilteredTasks.map((task) => task.id);
     if (!ids.length) return;
@@ -466,7 +495,7 @@ export function Dashboard() {
                 setLibrary={setLibrary}
                 libraries={libraries}
               />
-              <LibraryView items={visibleMedia} queueItems={queueScope} taskIndex={mediaTaskIndex} onTranscode={openTaskDialog} />
+              <LibraryView items={visibleMedia} queueItems={queueScope} taskIndex={mediaTaskIndex} busy={busy} onTranscode={openTaskDialog} onDeleteTask={deleteTask} />
               {filtered.length > visibleMedia.length ? (
                 <div className="mt-5 flex justify-center">
                   <Tip content="Render the next batch of matching media">
@@ -514,7 +543,14 @@ export function Dashboard() {
           </Tabs>
         </div>
       </main>
-      <TaskDialog selection={selected} config={state.config} busy={busy} onOpenChange={(open) => !open && setSelected(null)} onCreate={createTasks} />
+      <TaskDialog
+        selection={selected}
+        config={state.config}
+        busy={busy}
+        onOpenChange={(open) => !open && setSelected(null)}
+        onCreate={createTasks}
+        onDeleteExisting={deleteSelectionTasks}
+      />
       <DeleteFilteredDialog
         open={deleteFilteredOpen}
         totalCount={filteredTasks.length}
@@ -868,12 +904,16 @@ function LibraryView({
   items,
   queueItems,
   taskIndex,
-  onTranscode
+  busy,
+  onTranscode,
+  onDeleteTask
 }: {
   items: MediaItem[];
   queueItems: MediaItem[];
   taskIndex: MediaTaskIndex;
+  busy: boolean;
   onTranscode: (items: MediaItem[], title?: string, description?: string, bulk?: boolean) => void;
+  onDeleteTask: (id: string) => void;
 }) {
   const movies = items.filter((item) => item.kind === "movie");
   const shows = groupEpisodes(items.filter((item) => item.kind === "episode"));
@@ -886,7 +926,7 @@ function LibraryView({
         <MediaSection title="Movies" icon={Film}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {movies.map((item) => (
-              <MediaCard item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={(media) => onTranscode([media])} />
+              <MediaCard item={item} task={taskForMedia(item, taskIndex)} busy={busy} key={item.id} onTranscode={(media) => onTranscode([media])} onDeleteTask={onDeleteTask} />
             ))}
           </div>
         </MediaSection>
@@ -943,7 +983,7 @@ function LibraryView({
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                       {season.items.map((item) => (
-                        <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={(media) => onTranscode([media])} />
+                        <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} busy={busy} key={item.id} onTranscode={(media) => onTranscode([media])} onDeleteTask={onDeleteTask} />
                       ))}
                     </div>
                   </div>
@@ -957,7 +997,7 @@ function LibraryView({
         <MediaSection title="Unmatched" icon={Video}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {unknown.map((item) => (
-              <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} key={item.id} onTranscode={(media) => onTranscode([media])} />
+              <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} busy={busy} key={item.id} onTranscode={(media) => onTranscode([media])} onDeleteTask={onDeleteTask} />
             ))}
           </div>
         </MediaSection>
@@ -992,7 +1032,19 @@ function MediaSection({
   );
 }
 
-function MediaCard({ item, task, onTranscode }: { item: MediaItem; task?: TranscodeTask; onTranscode: (item: MediaItem) => void }) {
+function MediaCard({
+  item,
+  task,
+  busy,
+  onTranscode,
+  onDeleteTask
+}: {
+  item: MediaItem;
+  task?: TranscodeTask;
+  busy: boolean;
+  onTranscode: (item: MediaItem) => void;
+  onDeleteTask: (id: string) => void;
+}) {
   return (
     <motion.div layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
       <Card className="overflow-hidden">
@@ -1008,14 +1060,17 @@ function MediaCard({ item, task, onTranscode }: { item: MediaItem; task?: Transc
             </div>
             <MetaLine item={item} />
             <MediaTaskIndicator task={task} />
-            <div className="mt-3 flex items-center justify-between gap-2">
-              <span className="text-xs text-muted-foreground">{formatBytes(item.size)}</span>
-              <Tip content="Create a transcoding task for this media file">
-                <Button size="sm" onClick={() => onTranscode(item)}>
-                  <Play />
-                  Queue
-                </Button>
-              </Tip>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{formatBytes(item.size)}</span>
+              <div className="flex shrink-0 items-center gap-2">
+                <MediaTaskDeleteButton task={task} busy={busy} onDelete={onDeleteTask} />
+                <Tip content="Create a transcoding task for this media file">
+                  <Button size="sm" onClick={() => onTranscode(item)}>
+                    <Play />
+                    Queue
+                  </Button>
+                </Tip>
+              </div>
             </div>
           </div>
         </div>
@@ -1024,7 +1079,19 @@ function MediaCard({ item, task, onTranscode }: { item: MediaItem; task?: Transc
   );
 }
 
-function EpisodeRow({ item, task, onTranscode }: { item: MediaItem; task?: TranscodeTask; onTranscode: (item: MediaItem) => void }) {
+function EpisodeRow({
+  item,
+  task,
+  busy,
+  onTranscode,
+  onDeleteTask
+}: {
+  item: MediaItem;
+  task?: TranscodeTask;
+  busy: boolean;
+  onTranscode: (item: MediaItem) => void;
+  onDeleteTask: (id: string) => void;
+}) {
   return (
     <motion.div layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
       <Card>
@@ -1042,14 +1109,17 @@ function EpisodeRow({ item, task, onTranscode }: { item: MediaItem; task?: Trans
             </div>
             <MetaLine item={item} />
             <MediaTaskIndicator task={task} />
-            <div className="mt-2 flex items-center justify-between gap-2">
-              <span className="truncate text-xs text-muted-foreground">{item.ext.toUpperCase()} / {formatBytes(item.size)}</span>
-              <Tip content="Create a transcoding task for this episode">
-                <Button size="sm" variant="secondary" onClick={() => onTranscode(item)}>
-                  <Play />
-                  Queue
-                </Button>
-              </Tip>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{item.ext.toUpperCase()} / {formatBytes(item.size)}</span>
+              <div className="flex shrink-0 items-center gap-2">
+                <MediaTaskDeleteButton task={task} busy={busy} onDelete={onDeleteTask} />
+                <Tip content="Create a transcoding task for this episode">
+                  <Button size="sm" variant="secondary" onClick={() => onTranscode(item)}>
+                    <Play />
+                    Queue
+                  </Button>
+                </Tip>
+              </div>
             </div>
           </div>
         </CardContent>
@@ -1104,6 +1174,38 @@ function MediaTaskIndicator({ task }: { task?: TranscodeTask }) {
           {complete ? "Complete" : inProgress ? "In progress" : "Incomplete"}
         </Badge>
       </div>
+    </Tip>
+  );
+}
+
+function MediaTaskDeleteButton({ task, busy, onDelete }: { task?: TranscodeTask; busy: boolean; onDelete: (id: string) => void }) {
+  const [confirmingDelete, setConfirmingDelete] = React.useState(false);
+
+  React.useEffect(() => {
+    setConfirmingDelete(false);
+  }, [task?.id]);
+
+  if (!task) return null;
+  const deletable = canDeleteTask(task);
+  return (
+    <Tip content={deletable ? "Click once more to delete this task folder" : "Cancel in-progress tasks before deleting"}>
+      <Button
+        type="button"
+        variant={confirmingDelete ? "destructive" : "outline"}
+        size="sm"
+        disabled={busy || !deletable}
+        onClick={() => {
+          if (confirmingDelete) {
+            setConfirmingDelete(false);
+            onDelete(task.id);
+            return;
+          }
+          setConfirmingDelete(true);
+        }}
+      >
+        <Trash2 />
+        {confirmingDelete ? "Confirm" : "Delete"}
+      </Button>
     </Tip>
   );
 }
@@ -1270,13 +1372,15 @@ function TaskDialog({
   config,
   busy,
   onOpenChange,
-  onCreate
+  onCreate,
+  onDeleteExisting
 }: {
   selection: TaskSelection | null;
   config?: PublicConfig;
   busy: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (selection: TaskSelection, params: TaskParams, queueMode: QueueMode) => void;
+  onCreate: (selection: TaskSelection, params: TaskParams, queueMode: QueueCreateMode) => void;
+  onDeleteExisting: (selection: TaskSelection) => void;
 }) {
   const [fast, setFast] = React.useState(false);
   const [enableEncode, setEnableEncode] = React.useState(true);
@@ -1301,13 +1405,22 @@ function TaskDialog({
   }, [selection?.items[0]?.id]);
 
   const allEncoders = ["hevc", "av1", "h264-10bit", "h264-8bit"];
-  const effectiveQueueMode = selection?.bulk ? queueMode : "replace";
-  const queuePlan = selection ? buildQueuePlan(selection.items, selection.existingTasks, effectiveQueueMode) : emptyQueuePlan();
+  const effectiveQueueMode: QueueMode = selection?.bulk ? queueMode : "replace";
+  const queueCreateMode: QueueCreateMode = effectiveQueueMode === "incomplete" ? "incomplete" : "replace";
+  const queuePlan = selection ? buildQueuePlan(selection.items, selection.existingTasks, queueCreateMode) : emptyQueuePlan();
+  const selectedExistingTasks = uniqueTasks(selection?.existingTasks ?? []);
+  const selectedRunningTasks = selectedExistingTasks.filter((task) => !canDeleteTask(task));
+  const selectedExistingTaskCount = selectedExistingTasks.length;
   const existingTaskCount = queuePlan.existingTasks.length;
   const blocksReplacement = queuePlan.runningTasks.length > 0;
+  const blocksDelete = selectedRunningTasks.length > 0;
   const queueCount = queuePlan.items.length;
   const submit = () => {
     if (!selection) return;
+    if (effectiveQueueMode === "delete") {
+      onDeleteExisting(selection);
+      return;
+    }
     onCreate(selection, {
       fast,
       enableEncode,
@@ -1317,12 +1430,15 @@ function TaskDialog({
       quality: String(quality),
       audioKbps,
       videoExt: config?.videoExt ?? "mp4"
-    }, effectiveQueueMode);
+    }, queueCreateMode);
   };
+  const actionDisabled = effectiveQueueMode === "delete"
+    ? busy || selectedExistingTaskCount === 0 || blocksDelete
+    : busy || blocksReplacement || queueCount === 0 || (!fast && !encoders.length);
 
   return (
     <Dialog open={!!selection} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-w-4xl">
         <DialogHeader>
           <DialogTitle>{selection?.title ?? "Transcode"}</DialogTitle>
           <DialogDescription>{selection?.description}</DialogDescription>
@@ -1331,7 +1447,7 @@ function TaskDialog({
           {selection?.bulk ? (
             <div>
               <div className="mb-2 text-sm font-medium">Queue mode</div>
-              <div className="grid gap-2 sm:grid-cols-2">
+              <div className="grid gap-2 sm:grid-cols-3">
                 <Tip content="Delete matching task output and queue every selected episode again">
                   <Button type="button" variant={queueMode === "replace" ? "default" : "outline"} onClick={() => setQueueMode("replace")}>
                     <Trash2 />
@@ -1342,6 +1458,16 @@ function TaskDialog({
                   <Button type="button" variant={queueMode === "incomplete" ? "default" : "outline"} onClick={() => setQueueMode("incomplete")}>
                     <ListVideo />
                     Incomplete or missing
+                  </Button>
+                </Tip>
+                <Tip content={selectedRunningTasks.length ? "Cancel in-progress tasks before deleting selected task folders" : "Delete selected media's existing task folders without queueing replacements. Library media files are not touched."}>
+                  <Button
+                    type="button"
+                    variant={queueMode === "delete" ? "destructive" : "outline"}
+                    onClick={() => setQueueMode("delete")}
+                  >
+                    <Trash2 />
+                    Delete {selectedExistingTaskCount.toLocaleString()}
                   </Button>
                 </Tip>
               </div>
@@ -1389,7 +1515,7 @@ function TaskDialog({
             <LabeledSlider label={`Audio ${audioKbps} kbps`} value={audioKbps} min={96} max={320} step={8} onChange={setAudioKbps} tip="Opus audio bitrate per output" />
           </div>
           {selection && (selection.bulk || existingTaskCount) ? (
-            <div className={cn("rounded-lg border p-3 text-sm text-foreground", existingTaskCount || blocksReplacement ? "border-destructive/30 bg-destructive/10" : "bg-card/60")}>
+            <div className={cn("rounded-lg border p-3 text-sm text-foreground", existingTaskCount || blocksReplacement || effectiveQueueMode === "delete" ? "border-destructive/30 bg-destructive/10" : "bg-card/60")}>
               <div className="mb-1 flex items-center gap-2 font-medium">
                 {queueNoticeIcon(queuePlan, effectiveQueueMode)}
                 {queueNoticeTitle(queuePlan, effectiveQueueMode)}
@@ -1403,9 +1529,11 @@ function TaskDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={busy || blocksReplacement || queueCount === 0 || (!fast && !encoders.length)}>
-            {busy ? <Loader2 className="animate-spin" /> : <Play />}
-            Queue {queueCount === 1 ? "task" : `${queueCount.toLocaleString()} tasks`}
+          <Button onClick={submit} disabled={actionDisabled} variant={effectiveQueueMode === "delete" ? "destructive" : "default"}>
+            {busy ? <Loader2 className="animate-spin" /> : effectiveQueueMode === "delete" ? <Trash2 /> : <Play />}
+            {effectiveQueueMode === "delete"
+              ? `Delete ${selectedExistingTaskCount.toLocaleString()} ${pluralize("task", selectedExistingTaskCount)}`
+              : `Queue ${queueCount === 1 ? "task" : `${queueCount.toLocaleString()} tasks`}`}
           </Button>
         </div>
       </DialogContent>
@@ -1822,7 +1950,7 @@ function emptyQueuePlan(): QueuePlan {
   };
 }
 
-function buildQueuePlan(items: MediaItem[], tasks: TranscodeTask[], queueMode: QueueMode): QueuePlan {
+function buildQueuePlan(items: MediaItem[], tasks: TranscodeTask[], queueMode: QueueCreateMode): QueuePlan {
   const plan = emptyQueuePlan();
   const selectedItems = uniqueMediaItems(items);
   for (const item of selectedItems) {
@@ -1913,6 +2041,8 @@ function showSelectionDescription(showName: string, items: MediaItem[]) {
 
 function queueNoticeIcon(plan: QueuePlan, queueMode: QueueMode) {
   if (plan.runningTasks.length) return <CircleAlert className="size-4 text-destructive" />;
+  if (queueMode === "delete" && plan.existingTasks.length) return <Trash2 className="size-4 text-destructive" />;
+  if (queueMode === "delete") return <CircleAlert className="size-4 text-destructive" />;
   if (plan.existingTasks.length) return <Trash2 className="size-4 text-destructive" />;
   if (queueMode === "incomplete" && plan.skippedCompleteItems.length) return <CheckCircle2 className="size-4 text-primary" />;
   return <ListVideo className="size-4 text-primary" />;
@@ -1920,6 +2050,8 @@ function queueNoticeIcon(plan: QueuePlan, queueMode: QueueMode) {
 
 function queueNoticeTitle(plan: QueuePlan, queueMode: QueueMode) {
   if (plan.runningTasks.length) return "Existing task output cannot be removed yet";
+  if (queueMode === "delete" && plan.existingTasks.length) return "Existing task output will be removed";
+  if (queueMode === "delete") return "No existing tasks to delete";
   if (plan.existingTasks.length) return "Existing task output will be removed";
   if (queueMode === "incomplete" && plan.skippedCompleteItems.length) return "Completed media will be skipped";
   return "Ready to queue";
@@ -1927,7 +2059,14 @@ function queueNoticeTitle(plan: QueuePlan, queueMode: QueueMode) {
 
 function queueConfirmationText(selection: TaskSelection, plan: QueuePlan, queueMode: QueueMode) {
   if (plan.runningTasks.length) {
-    return `${plan.runningTasks.length.toLocaleString()} existing task${plan.runningTasks.length === 1 ? " is" : "s are"} in progress and cannot be deleted yet. Cancel or wait for ${plan.runningTasks.length === 1 ? "it" : "them"} before queueing replacements.`;
+    const action = queueMode === "delete" ? "deleting task folders" : "queueing replacements";
+    return `${plan.runningTasks.length.toLocaleString()} existing task${plan.runningTasks.length === 1 ? " is" : "s are"} in progress and cannot be deleted yet. Cancel or wait for ${plan.runningTasks.length === 1 ? "it" : "them"} before ${action}.`;
+  }
+  if (queueMode === "delete") {
+    if (plan.existingTasks.length) {
+      return `${plan.existingTasks.length.toLocaleString()} existing task ${pluralize("folder", plan.existingTasks.length)} for selected ${selectionMediaLabel(selection.items)} will be deleted from the output directory. Library media files will not be deleted.`;
+    }
+    return `No existing task output matched the selected ${selectionMediaLabel(selection.items)}. Library media files will not be deleted.`;
   }
   if (!selection.bulk) {
     return "This media file is already in a task. Queueing it will delete the existing task output and job metadata before creating the replacement.";
