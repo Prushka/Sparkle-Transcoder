@@ -1,14 +1,19 @@
 package executil
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
+	"sync"
 
 	"sparkle-transcoder/internal/priority"
 
 	log "github.com/sirupsen/logrus"
+)
+
+const (
+	maxCommandStdout = 32 * 1024 * 1024
+	maxCommandStderr = 1 * 1024 * 1024
 )
 
 type Runner interface {
@@ -20,13 +25,17 @@ type LocalRunner struct {
 }
 
 func (r LocalRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	stdout := newLimitedBuffer(maxCommandStdout)
+	stderr := newLimitedBuffer(maxCommandStderr)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	log.Debugf("command: %s", cmd.String())
 	if err := cmd.Start(); err != nil {
-		return out.Bytes(), err
+		return stdout.Bytes(), err
 	}
 	if r.LowPriority {
 		if err := priority.LowPriority(cmd.Process.Pid); err != nil {
@@ -35,7 +44,70 @@ func (r LocalRunner) Run(ctx context.Context, name string, args ...string) ([]by
 	}
 	err := cmd.Wait()
 	if err != nil {
-		return out.Bytes(), fmt.Errorf("%s failed: %w: %s", cmd.String(), err, out.String())
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return stdout.Bytes(), ctxErr
+		}
+		if stdout.Truncated() {
+			return stdout.Bytes(), fmt.Errorf("%s produced more than %d bytes on stdout", cmd.String(), maxCommandStdout)
+		}
+		errOutput := stderr.String()
+		if errOutput == "" {
+			errOutput = string(stdout.Bytes())
+		}
+		return stdout.Bytes(), fmt.Errorf("%s failed: %w: %s", cmd.String(), err, errOutput)
 	}
-	return out.Bytes(), nil
+	if stdout.Truncated() {
+		return stdout.Bytes(), fmt.Errorf("%s produced more than %d bytes on stdout", cmd.String(), maxCommandStdout)
+	}
+	return stdout.Bytes(), nil
+}
+
+type limitedBuffer struct {
+	mu        sync.Mutex
+	buf       []byte
+	limit     int
+	truncated int64
+}
+
+func newLimitedBuffer(limit int) *limitedBuffer {
+	return &limitedBuffer{limit: limit}
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	available := b.limit - len(b.buf)
+	if available > 0 {
+		if available > len(p) {
+			available = len(p)
+		}
+		b.buf = append(b.buf, p[:available]...)
+	}
+	if available < len(p) {
+		b.truncated += int64(len(p) - available)
+	}
+	return len(p), nil
+}
+
+func (b *limitedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]byte, len(b.buf))
+	copy(out, b.buf)
+	return out
+}
+
+func (b *limitedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.truncated == 0 {
+		return string(b.buf)
+	}
+	return fmt.Sprintf("%s\n... truncated %d bytes ...", string(b.buf), b.truncated)
+}
+
+func (b *limitedBuffer) Truncated() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.truncated > 0
 }

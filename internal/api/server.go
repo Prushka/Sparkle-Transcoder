@@ -24,9 +24,17 @@ type Server struct {
 	scanner *media.Scanner
 	tasks   *task.Store
 	echo    *echo.Echo
+	ctx     context.Context
 }
 
 func New(cfg *config.Config, scanner *media.Scanner, tasks *task.Store) *Server {
+	return NewWithContext(context.Background(), cfg, scanner, tasks)
+}
+
+func NewWithContext(ctx context.Context, cfg *config.Config, scanner *media.Scanner, tasks *task.Store) *Server {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	e := echo.New()
 	e.HideBanner = true
 	e.Use(middleware.Recover())
@@ -37,7 +45,7 @@ func New(cfg *config.Config, scanner *media.Scanner, tasks *task.Store) *Server 
 		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
 		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept},
 	}))
-	s := &Server{cfg: cfg, scanner: scanner, tasks: tasks, echo: e}
+	s := &Server{cfg: cfg, scanner: scanner, tasks: tasks, echo: e, ctx: ctx}
 	s.routes()
 	return s
 }
@@ -83,7 +91,7 @@ func (s *Server) routes() {
 		}
 		force := req.Force != nil && *req.Force
 		go func() {
-			if _, err := s.scanner.Scan(context.Background(), force); err != nil && !errors.Is(err, media.ErrScanRunning) {
+			if _, err := s.scanner.Scan(s.ctx, force); err != nil && !errors.Is(err, media.ErrScanRunning) && !errors.Is(err, context.Canceled) {
 				log.Errorf("scan failed: %v", err)
 			}
 		}()
@@ -297,6 +305,9 @@ func (s *Server) cancelTask(c echo.Context) error {
 func (s *Server) retryTask(c echo.Context) error {
 	t, err := s.tasks.Retry(c.Request().Context(), c.Param("id"))
 	if err != nil {
+		if errors.Is(err, task.ErrTaskActive) {
+			return echo.NewHTTPError(http.StatusConflict, err.Error())
+		}
 		return err
 	}
 	return c.JSON(http.StatusAccepted, t)
@@ -363,7 +374,7 @@ func StartPeriodicScan(ctx context.Context, scanner *media.Scanner, interval tim
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if _, err := scanner.Scan(ctx, false); err != nil && !errors.Is(err, media.ErrScanRunning) {
+				if _, err := scanner.Scan(ctx, false); err != nil && !errors.Is(err, media.ErrScanRunning) && !errors.Is(err, context.Canceled) {
 					log.Errorf("periodic scan failed: %v", err)
 				}
 			}

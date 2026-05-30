@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/jpeg"
@@ -132,7 +133,7 @@ func (r *Runner) fail(task *Task, err error) error {
 	now := time.Now().UTC()
 	task.UpdatedAt = now
 	task.FinishedAt = &now
-	if err == context.Canceled {
+	if errors.Is(err, context.Canceled) {
 		task.State = StateCanceled
 		task.Error = "canceled"
 	} else {

@@ -32,29 +32,30 @@ func main() {
 		log.Fatalf("output dir: %v", err)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	defer stop()
+
 	scanner := media.NewScanner(cfg)
 	if err := scanner.LoadCache(); err != nil {
 		log.Infof("scan cache unavailable: %v", err)
 	}
 	if cfg.ScanOnStartup {
 		go func() {
-			if _, err := scanner.Scan(context.Background(), false); err != nil && !errors.Is(err, media.ErrScanRunning) {
+			if _, err := scanner.Scan(ctx, false); err != nil && !errors.Is(err, media.ErrScanRunning) && !errors.Is(err, context.Canceled) {
 				log.Errorf("startup scan failed: %v", err)
 			}
 		}()
 	}
 
 	runner := task.NewRunner(cfg, scanner, executil.LocalRunner{LowPriority: cfg.EnableLowPriority})
-	store := task.NewStore(cfg, scanner, runner)
+	store := task.NewStoreWithContext(ctx, cfg, scanner, runner)
 	go func() {
-		if err := store.Refresh(context.Background()); err != nil {
+		if err := store.Refresh(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Errorf("startup task refresh failed: %v", err)
 		}
 	}()
-	server := api.New(cfg, scanner, store)
+	server := api.NewWithContext(ctx, cfg, scanner, store)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	defer stop()
 	api.StartPeriodicScan(ctx, scanner, cfg.ScanInterval)
 
 	errCh := make(chan error, 1)
@@ -69,6 +70,9 @@ func main() {
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Errorf("shutdown: %v", err)
+		}
+		if err := store.Shutdown(shutdownCtx); err != nil {
+			log.Errorf("task shutdown: %v", err)
 		}
 	case err := <-errCh:
 		if err != nil {

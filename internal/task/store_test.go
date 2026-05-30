@@ -301,6 +301,78 @@ func TestListAndReadMarkActivelyRunningTask(t *testing.T) {
 	}
 }
 
+func TestRetryRejectsQueuedOrRunningTask(t *testing.T) {
+	output := t.TempDir()
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name    string
+		state   string
+		running bool
+	}{
+		{name: "queued", state: StateQueued},
+		{name: "running", state: StateIncomplete, running: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &Task{
+				ID:        "abc12",
+				InputPath: filepath.Join(t.TempDir(), "movie.mkv"),
+				Input:     "movie.mkv",
+				OutputDir: filepath.Join(output, tc.name, "abc12"),
+				State:     tc.state,
+				Params:    Params{},
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			if err := writeTask(task); err != nil {
+				t.Fatal(err)
+			}
+			cancels := map[string]context.CancelFunc{}
+			if tc.running {
+				_, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				cancels[task.ID] = cancel
+			}
+			store := &Store{
+				cfg:     &config.Config{Output: filepath.Join(output, tc.name)},
+				queue:   make(chan string, 1),
+				cancels: cancels,
+			}
+			if _, err := store.Retry(context.Background(), task.ID); !errors.Is(err, ErrTaskActive) {
+				t.Fatalf("Retry error = %v, want ErrTaskActive", err)
+			}
+		})
+	}
+}
+
+func TestClaimQueuedPreventsDuplicateRun(t *testing.T) {
+	output := t.TempDir()
+	task := &Task{
+		ID:        "abc12",
+		Input:     "movie.mkv",
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateQueued,
+		Params:    Params{},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := writeTask(task); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{
+		cfg:     &config.Config{Output: output},
+		cancels: map[string]context.CancelFunc{},
+	}
+	_, _, cancel, ok := store.claimQueued(task.ID)
+	if !ok {
+		t.Fatal("first claim failed")
+	}
+	defer cancel()
+	if _, _, _, ok := store.claimQueued(task.ID); ok {
+		t.Fatal("second claim succeeded while task was already running")
+	}
+	store.releaseRunning(task.ID)
+}
+
 func TestValidateTaskIDRejectsTraversal(t *testing.T) {
 	for _, id := range []string{"", ".", "..", "../escape", "nested/id", `nested\id`} {
 		if err := validateTaskID(id); err == nil {

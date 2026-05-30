@@ -22,6 +22,10 @@ type Store struct {
 	scanner *media.Scanner
 	runner  *Runner
 
+	ctx  context.Context
+	stop context.CancelFunc
+	wg   sync.WaitGroup
+
 	queue   chan string
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
@@ -34,19 +38,72 @@ type Store struct {
 }
 
 var ErrTaskRunning = errors.New("task is running; cancel it before deleting")
+var ErrTaskActive = errors.New("task is already queued or running")
 
 func NewStore(cfg *config.Config, scanner *media.Scanner, runner *Runner) *Store {
+	return NewStoreWithContext(context.Background(), cfg, scanner, runner)
+}
+
+func NewStoreWithContext(ctx context.Context, cfg *config.Config, scanner *media.Scanner, runner *Runner) *Store {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, stop := context.WithCancel(ctx)
 	store := &Store{
 		cfg:     cfg,
 		scanner: scanner,
 		runner:  runner,
+		ctx:     ctx,
+		stop:    stop,
 		queue:   make(chan string, 256),
 		cancels: map[string]context.CancelFunc{},
 	}
 	for i := 0; i < cfg.TaskConcurrency; i++ {
-		go store.worker()
+		store.wg.Add(1)
+		go func() {
+			defer store.wg.Done()
+			store.worker()
+		}()
 	}
 	return store
+}
+
+func (s *Store) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s.stop != nil {
+		s.stop()
+	}
+
+	s.mu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(s.cancels))
+	for _, cancel := range s.cancels {
+		cancels = append(cancels, cancel)
+	}
+	s.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Store) context() context.Context {
+	if s.ctx == nil {
+		return context.Background()
+	}
+	return s.ctx
 }
 
 func (s *Store) List(filter ListFilter) ([]Task, error) {
@@ -170,6 +227,11 @@ func (s *Store) read(id string, includeFiles bool) (*Task, error) {
 }
 
 func (s *Store) Create(ctx context.Context, item media.Item, params Params) (*Task, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	if err := media.ValidateUnderRoot(s.cfg.MediaRoot, item.Path); err != nil {
 		return nil, err
 	}
@@ -177,7 +239,10 @@ func (s *Store) Create(ctx context.Context, item media.Item, params Params) (*Ta
 		extractStreams := true
 		params.ExtractStreams = &extractStreams
 	}
-	id := s.newID()
+	id, outputDir, err := s.reserveTaskDir()
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	enableEncode := s.cfg.EnableEncode
 	enableSprites := s.cfg.EnableSprite
@@ -206,7 +271,7 @@ func (s *Store) Create(ctx context.Context, item media.Item, params Params) (*Ta
 		InputRelPath: item.RelPath,
 		InputParent:  filepath.Dir(item.Path),
 		Input:        item.FileName,
-		OutputDir:    filepath.Join(s.cfg.Output, id),
+		OutputDir:    outputDir,
 		State:        StateQueued,
 		Params:       params,
 		CreatedAt:    now,
@@ -215,18 +280,26 @@ func (s *Store) Create(ctx context.Context, item media.Item, params Params) (*Ta
 		OriModTime:   item.ModTime.Unix(),
 		Media:        &item,
 	}
-	if err := os.MkdirAll(task.OutputDir, 0755); err != nil {
-		return nil, err
-	}
 	if err := s.write(task); err != nil {
 		return nil, err
 	}
 	s.upsertCache(task)
+	if err := s.enqueue(task.ID); err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
+func (s *Store) enqueue(id string) error {
+	if s.queue == nil {
+		return fmt.Errorf("task queue is not initialized")
+	}
+	storeCtx := s.context()
 	select {
-	case s.queue <- task.ID:
-		return task, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case s.queue <- id:
+		return nil
+	case <-storeCtx.Done():
+		return storeCtx.Err()
 	}
 }
 
@@ -236,9 +309,9 @@ func (s *Store) Cancel(id string) (*Task, error) {
 	if cancel != nil {
 		cancel()
 	}
-	s.mu.Unlock()
-	task, err := s.Read(id)
+	task, err := s.read(id, true)
 	if err != nil {
+		s.mu.Unlock()
 		return nil, err
 	}
 	if task.State == StateQueued {
@@ -249,17 +322,35 @@ func (s *Store) Cancel(id string) (*Task, error) {
 		task.Error = "canceled before start"
 		err = s.write(task)
 	}
+	task.Running = cancel != nil
+	s.mu.Unlock()
 	s.upsertCache(task)
 	return task, err
 }
 
 func (s *Store) Retry(ctx context.Context, id string) (*Task, error) {
-	task, err := s.Read(id)
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	s.mu.Lock()
+	if s.cancels[id] != nil {
+		s.mu.Unlock()
+		return nil, ErrTaskActive
+	}
+	task, err := s.read(id, true)
 	if err != nil {
+		s.mu.Unlock()
 		return nil, err
 	}
 	if task.InputPath == "" {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("task has no input path")
+	}
+	if task.State == StateQueued || task.State == StateRunning {
+		s.mu.Unlock()
+		return nil, ErrTaskActive
 	}
 	now := time.Now().UTC()
 	task.State = StateQueued
@@ -268,15 +359,15 @@ func (s *Store) Retry(ctx context.Context, id string) (*Task, error) {
 	task.FinishedAt = nil
 	task.UpdatedAt = now
 	if err := s.write(task); err != nil {
+		s.mu.Unlock()
 		return nil, err
 	}
+	s.mu.Unlock()
 	s.upsertCache(task)
-	select {
-	case s.queue <- task.ID:
-		return task, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	if err := s.enqueue(task.ID); err != nil {
+		return nil, err
 	}
+	return task, nil
 }
 
 func (s *Store) Delete(id string) error {
@@ -284,45 +375,81 @@ func (s *Store) Delete(id string) error {
 	if err != nil {
 		return err
 	}
-	task, err := s.Read(id)
+	s.mu.Lock()
+	task, err := s.read(id, true)
 	if err == nil && task.State == StateRunning {
+		s.mu.Unlock()
 		return ErrTaskRunning
 	}
-	s.mu.Lock()
 	cancel := s.cancels[id]
-	s.mu.Unlock()
 	if cancel != nil {
+		s.mu.Unlock()
 		return ErrTaskRunning
 	}
 	if err := os.RemoveAll(dir); err != nil {
+		s.mu.Unlock()
 		return err
 	}
+	s.mu.Unlock()
 	s.removeCache(id)
 	return nil
 }
 
 func (s *Store) worker() {
-	for id := range s.queue {
-		task, err := s.Read(id)
-		if err != nil || task.State != StateQueued {
-			continue
+	for {
+		select {
+		case <-s.context().Done():
+			return
+		case id, ok := <-s.queue:
+			if !ok {
+				return
+			}
+			s.runQueued(id)
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		s.mu.Lock()
-		s.cancels[id] = cancel
-		s.mu.Unlock()
-		err = s.runner.Run(ctx, task)
-		s.mu.Lock()
-		delete(s.cancels, id)
-		s.mu.Unlock()
-		cancel()
-		if err != nil {
-			_ = s.runner.fail(task, err)
-			s.upsertCache(task)
-			continue
-		}
-		s.upsertCache(task)
 	}
+}
+
+func (s *Store) runQueued(id string) {
+	task, ctx, cancel, ok := s.claimQueued(id)
+	if !ok {
+		return
+	}
+
+	err := s.runner.Run(ctx, task)
+	cancel()
+	if err != nil {
+		_ = s.runner.fail(task, err)
+		s.upsertCache(task)
+		s.releaseRunning(id)
+		return
+	}
+	s.upsertCache(task)
+	s.releaseRunning(id)
+}
+
+func (s *Store) claimQueued(id string) (*Task, context.Context, context.CancelFunc, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancels == nil {
+		s.cancels = map[string]context.CancelFunc{}
+	}
+	if s.context().Err() != nil || s.cancels[id] != nil {
+		return nil, nil, nil, false
+	}
+	task, err := s.read(id, true)
+	if err != nil || task.State != StateQueued {
+		return nil, nil, nil, false
+	}
+	ctx, cancel := context.WithCancel(s.context())
+	s.cancels[id] = cancel
+	task.Running = true
+	return task, ctx, cancel, true
+}
+
+func (s *Store) releaseRunning(id string) {
+	s.mu.Lock()
+	delete(s.cancels, id)
+	s.mu.Unlock()
 }
 
 func (s *Store) taskDir(id string) (string, error) {
@@ -380,7 +507,43 @@ func writeTask(task *Task) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(task.OutputDir, JobFile), content, 0644)
+	file, err := os.CreateTemp(task.OutputDir, ".job-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := file.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := file.Write(content); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Chmod(0644); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := replaceTaskFile(tmpName, filepath.Join(task.OutputDir, JobFile)); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+func replaceTaskFile(tmpName, target string) error {
+	if err := os.Rename(tmpName, target); err != nil {
+		if removeErr := os.Remove(target); removeErr != nil && !os.IsNotExist(removeErr) {
+			return err
+		}
+		return os.Rename(tmpName, target)
+	}
+	return nil
 }
 
 func decodeTask(content []byte) (*Task, error) {
@@ -453,6 +616,9 @@ func collectFiles(dir string) map[string]int64 {
 		if entry.IsDir() {
 			continue
 		}
+		if isTaskWriteTemp(entry.Name()) {
+			continue
+		}
 		stat, err := entry.Info()
 		if err != nil {
 			continue
@@ -460,6 +626,10 @@ func collectFiles(dir string) map[string]int64 {
 		files[entry.Name()] = stat.Size()
 	}
 	return files
+}
+
+func isTaskWriteTemp(name string) bool {
+	return strings.HasPrefix(name, ".job-") && strings.HasSuffix(name, ".tmp")
 }
 
 func newestModTime(dir string) time.Time {
@@ -488,12 +658,20 @@ func jobModTime(path string) time.Time {
 	return stat.ModTime().UTC()
 }
 
-func (s *Store) newID() string {
+func (s *Store) reserveTaskDir() (string, string, error) {
+	if err := os.MkdirAll(s.cfg.Output, 0755); err != nil {
+		return "", "", err
+	}
 	for {
 		id := randomID(5)
-		if _, err := os.Stat(filepath.Join(s.cfg.Output, id)); os.IsNotExist(err) {
-			return id
+		dir := filepath.Join(s.cfg.Output, id)
+		if err := os.Mkdir(dir, 0755); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return "", "", err
 		}
+		return id, dir, nil
 	}
 }
 
