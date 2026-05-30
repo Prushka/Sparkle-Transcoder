@@ -130,6 +130,7 @@ func TestFailPersistsErrorReason(t *testing.T) {
 		Input:     "movie.mkv",
 		OutputDir: filepath.Join(output, "abc12"),
 		State:     StateRunning,
+		Running:   true,
 		Params:    Params{},
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -150,6 +151,9 @@ func TestFailPersistsErrorReason(t *testing.T) {
 	}
 	if !strings.Contains(got.Error, "encoder unavailable") {
 		t.Fatalf("error = %q, want failure reason", got.Error)
+	}
+	if got.Running {
+		t.Fatal("failed job persisted running=true")
 	}
 }
 
@@ -257,6 +261,13 @@ func TestWorkerUpdatesListCacheAfterRun(t *testing.T) {
 	if tasks[0].FinishedAt == nil {
 		t.Fatal("cached task missing finished timestamp")
 	}
+	got, err := decodeTask(mustReadFile(t, filepath.Join(output, task.ID, JobFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Running {
+		t.Fatal("completed job persisted running=true")
+	}
 }
 
 func TestRunnerUpdateHookReportsIntermediateStates(t *testing.T) {
@@ -303,6 +314,45 @@ func TestRunnerUpdateHookReportsIntermediateStates(t *testing.T) {
 		if !stringSliceContains(states, want) {
 			t.Fatalf("runner update states = %+v, missing %s", states, want)
 		}
+	}
+}
+
+func TestRunnerPropagatesCanceledOptionalExtraction(t *testing.T) {
+	output := t.TempDir()
+	input := filepath.Join(t.TempDir(), "Movies", "Example", "Example.mkv")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	enableEncode := false
+	enableSprites := false
+	now := time.Now().UTC()
+	task := &Task{
+		ID:        "abc12",
+		InputPath: input,
+		Input:     filepath.Base(input),
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateQueued,
+		Params: Params{
+			EnableEncode:  &enableEncode,
+			EnableSprites: &enableSprites,
+			VideoExt:      "mp4",
+			AudioKbps:     144,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	runner := NewRunner(&config.Config{Output: output, Ffprobe: "ffprobe", Ffmpeg: "ffmpeg"}, nil, cancelStreamProbeExec{})
+	err := runner.Run(context.Background(), task)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
+	}
+	if task.State == StateStreamsExtracted || task.State == StateComplete {
+		t.Fatalf("task advanced to %s after cancellation", task.State)
 	}
 }
 
@@ -509,6 +559,68 @@ func TestListAndReadMarkActivelyRunningTask(t *testing.T) {
 	}
 }
 
+func TestRetryCleansOutputAndRequeuesTask(t *testing.T) {
+	root := t.TempDir()
+	output := t.TempDir()
+	input := filepath.Join(root, "Movies", "Example", "Example.mkv")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC().Add(-time.Minute)
+	task := &Task{
+		ID:           "abc12",
+		InputPath:    input,
+		InputRelPath: "Movies/Example/Example.mkv",
+		InputParent:  filepath.Dir(input),
+		Input:        filepath.Base(input),
+		OutputDir:    filepath.Join(output, "abc12"),
+		State:        StateCanceled,
+		Running:      true,
+		Error:        "canceled",
+		Params:       Params{VideoExt: "mp4"},
+		CreatedAt:    started.Add(-time.Minute),
+		UpdatedAt:    started,
+		StartedAt:    &started,
+		FinishedAt:   &started,
+		Files:        map[string]int64{"stale.mp4": 5},
+	}
+	if err := writeTask(task); err != nil {
+		t.Fatal(err)
+	}
+	staleFile := filepath.Join(task.OutputDir, "stale.mp4")
+	if err := os.WriteFile(staleFile, []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{
+		cfg:     &config.Config{MediaRoot: root, Output: output},
+		queue:   make(chan string, 1),
+		cancels: map[string]context.CancelFunc{},
+		cache:   []Task{cacheTask(*task)},
+	}
+
+	retried, err := store.Retry(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.State != StateQueued || retried.Running || retried.Error != "" || retried.StartedAt != nil || retried.FinishedAt != nil {
+		t.Fatalf("retried task = %+v, want clean queued task", retried)
+	}
+	if _, err := os.Stat(staleFile); !os.IsNotExist(err) {
+		t.Fatalf("stale output still exists, stat error = %v", err)
+	}
+	select {
+	case id := <-store.queue:
+		if id != task.ID {
+			t.Fatalf("queued id = %s, want %s", id, task.ID)
+		}
+	default:
+		t.Fatal("retried task was not enqueued")
+	}
+}
+
 func TestRetryRejectsQueuedOrRunningTask(t *testing.T) {
 	output := t.TempDir()
 	now := time.Now().UTC()
@@ -697,6 +809,19 @@ type fakeExec struct{}
 var _ executil.Runner = fakeExec{}
 
 func (fakeExec) Run(context.Context, string, ...string) ([]byte, error) {
+	return []byte(`{"chapters":[],"streams":[]}`), nil
+}
+
+type cancelStreamProbeExec struct{}
+
+var _ executil.Runner = cancelStreamProbeExec{}
+
+func (cancelStreamProbeExec) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	for _, arg := range args {
+		if arg == "-show_streams" {
+			return nil, context.Canceled
+		}
+	}
 	return []byte(`{"chapters":[],"streams":[]}`), nil
 }
 

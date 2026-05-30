@@ -60,12 +60,21 @@ func (r *Runner) SetUpdateHook(hook func(*Task)) {
 }
 
 func (r *Runner) Run(ctx context.Context, task *Task) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	task.StartedAt = &now
 	task.State = StateRunning
 	task.UpdatedAt = now
 	task.Error = ""
 	if err := r.writeTask(task); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
@@ -77,31 +86,43 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 	if err := r.writeTask(task); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if r.cfg.ComputeSHA256 {
-		sum, err := calculateSHA256(task.InputPath)
+		sum, err := calculateSHA256(ctx, task.InputPath)
 		if err != nil {
 			return err
 		}
 		log.Infof("sha256 %s %s", task.Input, sum)
 	}
-	if err := r.copyRelatedFiles(task); err != nil {
+	if err := r.copyRelatedFiles(ctx, task); err != nil {
 		return err
 	}
-	_ = r.extractDominantColor(task)
+	if err := r.extractDominantColor(ctx, task); errors.Is(err, context.Canceled) {
+		return err
+	}
 	if err := r.extractChapters(ctx, task); err != nil {
 		return err
 	}
 	if task.Params.ExtractStreams == nil || *task.Params.ExtractStreams {
 		if err := r.extractStreams(ctx, task, task.InputPath, subtitleType); err != nil {
-			log.Warnf("subtitle extraction warning for %s: %v", task.Input, err)
+			if err := optionalRunnerWarning(ctx, task, "subtitle extraction", err); err != nil {
+				return err
+			}
 		}
 		if err := r.extractExternalSubtitles(ctx, task); err != nil {
 			return err
 		}
 		if err := r.extractStreams(ctx, task, task.InputPath, attachmentType); err != nil {
-			log.Warnf("attachment extraction warning for %s: %v", task.Input, err)
+			if err := optionalRunnerWarning(ctx, task, "attachment extraction", err); err != nil {
+				return err
+			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	task.State = StateStreamsExtracted
 	task.UpdatedAt = time.Now().UTC()
@@ -119,7 +140,9 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 		}
 		if len(task.EncodedCodecs) > 0 {
 			if err := r.extractStreams(ctx, task, r.codecVideo(task, task.EncodedCodecs[0]), audioType); err != nil {
-				log.Warnf("audio extraction warning for %s: %v", task.Input, err)
+				if err := optionalRunnerWarning(ctx, task, "audio extraction", err); err != nil {
+					return err
+				}
 			}
 			if err := r.mapAudioTracks(ctx, task); err != nil {
 				return err
@@ -129,18 +152,37 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 			}
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	now = time.Now().UTC()
 	task.State = StateComplete
+	task.Running = false
 	task.FinishedAt = &now
 	task.UpdatedAt = now
 	task.Files = collectFiles(task.OutputDir)
 	return r.writeTask(task)
 }
 
+func optionalRunnerWarning(ctx context.Context, task *Task, label string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return err
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	log.Warnf("%s warning for %s: %v", label, task.Input, err)
+	return nil
+}
+
 func (r *Runner) fail(task *Task, err error) error {
 	now := time.Now().UTC()
 	task.UpdatedAt = now
 	task.FinishedAt = &now
+	task.Running = false
 	if errors.Is(err, context.Canceled) {
 		task.State = StateCanceled
 		task.Error = "canceled"
@@ -270,9 +312,12 @@ func (r *Runner) extractExternalSubtitles(ctx context.Context, task *Task) error
 		return nil
 	}
 	for _, sub := range item.Subtitles {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		ext := strings.ToLower(filepath.Ext(sub.Name))
 		dest := r.outputJoin(task, safeName(sub.Name))
-		if _, err := copyFile(sub.Path, dest); err != nil {
+		if _, err := copyFile(ctx, sub.Path, dest); err != nil {
 			return err
 		}
 		stream := Stream{CodecType: subtitleType, CodecName: strings.TrimPrefix(ext, "."), Location: filepath.Base(dest), Language: languageFromSubtitleName(sub.Name)}
@@ -481,7 +526,10 @@ func (r *Runner) generateSprites(ctx context.Context, task *Task, videoFile stri
 	return os.WriteFile(r.outputJoin(task, ThumbnailVTT), []byte(vtt), 0644)
 }
 
-func (r *Runner) copyRelatedFiles(task *Task) error {
+func (r *Runner) copyRelatedFiles(ctx context.Context, task *Task) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if task.MediaID == "" {
 		return nil
 	}
@@ -500,23 +548,29 @@ func (r *Runner) copyRelatedFiles(task *Task) error {
 		if copyOp.src == nil {
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		name := copyOp.name
 		if name == "fanart" {
 			name = "fanart.jpg"
 		}
-		if _, err := copyFile(copyOp.src.Path, r.outputJoin(task, name)); err != nil {
+		if _, err := copyFile(ctx, copyOp.src.Path, r.outputJoin(task, name)); err != nil {
 			return err
 		}
 	}
 	if len(item.NFO) > 0 {
-		if _, err := copyFile(item.NFO[0].Path, r.outputJoin(task, "info.nfo")); err != nil {
+		if _, err := copyFile(ctx, item.NFO[0].Path, r.outputJoin(task, "info.nfo")); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (r *Runner) extractDominantColor(task *Task) error {
+func (r *Runner) extractDominantColor(ctx context.Context, task *Task) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f, err := os.Open(r.outputJoin(task, "poster.jpg"))
 	if err != nil {
 		return err
@@ -524,6 +578,9 @@ func (r *Runner) extractDominantColor(task *Task) error {
 	defer f.Close()
 	img, _, err := image.Decode(f)
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	task.DominantColors = []string{dominantcolor.Hex(dominantcolor.Find(img))}
@@ -551,7 +608,13 @@ func (r *Runner) outputJoin(task *Task, parts ...string) string {
 	return filepath.Join(append([]string{task.OutputDir}, parts...)...)
 }
 
-func copyFile(src, dst string) (int64, error) {
+func copyFile(ctx context.Context, src, dst string) (int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	stat, err := os.Stat(src)
 	if err != nil {
 		return 0, err
@@ -564,6 +627,9 @@ func copyFile(src, dst string) (int64, error) {
 		return 0, err
 	}
 	defer in.Close()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return 0, err
 	}
@@ -572,18 +638,65 @@ func copyFile(src, dst string) (int64, error) {
 		return 0, err
 	}
 	defer out.Close()
-	return io.Copy(out, in)
+	buf := make([]byte, 1024*1024)
+	var written int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		nr, readErr := in.Read(buf)
+		if nr > 0 {
+			if err := ctx.Err(); err != nil {
+				return written, err
+			}
+			nw, writeErr := out.Write(buf[:nr])
+			written += int64(nw)
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if nw != nr {
+				return written, io.ErrShortWrite
+			}
+		}
+		if readErr == io.EOF {
+			return written, nil
+		}
+		if readErr != nil {
+			return written, readErr
+		}
+	}
 }
 
-func calculateSHA256(path string) (string, error) {
+func calculateSHA256(ctx context.Context, path string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
+	buf := make([]byte, 1024*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		n, readErr := file.Read(buf)
+		if n > 0 {
+			if _, err := hash.Write(buf[:n]); err != nil {
+				return "", err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return "", readErr
+		}
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

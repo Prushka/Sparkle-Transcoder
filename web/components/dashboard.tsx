@@ -388,7 +388,8 @@ export function Dashboard() {
       const task = await api.cancelTask(id);
       setState((current) => ({
         ...current,
-        tasks: upsertTask(current.tasks, task)
+        tasks: upsertTask(current.tasks, task),
+        taskStatus: updateTaskStatusTask(current.taskStatus, task)
       }));
       setError("");
     } catch (err) {
@@ -401,7 +402,8 @@ export function Dashboard() {
       const task = await api.retryTask(id);
       setState((current) => ({
         ...current,
-        tasks: upsertTask(current.tasks, task)
+        tasks: upsertTask(current.tasks, task),
+        taskStatus: updateTaskStatusTask(current.taskStatus, task)
       }));
       setError("");
     } catch (err) {
@@ -415,7 +417,8 @@ export function Dashboard() {
       await api.deleteTask(id);
       setState((current) => ({
         ...current,
-        tasks: current.tasks.filter((task) => task.id !== id)
+        tasks: current.tasks.filter((task) => task.id !== id),
+        taskStatus: removeActiveTask(current.taskStatus, id)
       }));
       setError("");
     } catch (err) {
@@ -442,7 +445,8 @@ export function Dashboard() {
       const deletedIds = new Set(ids.filter((id) => !failedIds.has(id)));
       setState((current) => ({
         ...current,
-        tasks: current.tasks.filter((task) => !deletedIds.has(task.id))
+        tasks: current.tasks.filter((task) => !deletedIds.has(task.id)),
+        taskStatus: removeActiveTasks(current.taskStatus, deletedIds)
       }));
       setSelected(null);
       setError(result.failures.length ? `${result.deleted.toLocaleString()} task ${pluralize("folder", result.deleted)} deleted, ${result.failures.length.toLocaleString()} could not be deleted. ${result.failures[0].error}` : "");
@@ -460,9 +464,11 @@ export function Dashboard() {
     try {
       const result = await api.deleteTasks(ids);
       const failedIds = new Set(result.failures.map((failure) => failure.id));
+      const deletedIds = new Set(ids.filter((id) => !failedIds.has(id)));
       setState((current) => ({
         ...current,
-        tasks: current.tasks.filter((task) => !ids.includes(task.id) || failedIds.has(task.id))
+        tasks: current.tasks.filter((task) => !deletedIds.has(task.id)),
+        taskStatus: removeActiveTasks(current.taskStatus, deletedIds)
       }));
       setDeleteFilteredOpen(false);
       setError(result.failures.length ? `${result.deleted} tasks deleted, ${result.failures.length} could not be deleted.` : "");
@@ -2002,13 +2008,14 @@ function mergeTaskDetails(next: TranscodeTask[], current: TranscodeTask[]) {
   const detailed = new Map(current.filter((task) => task.files || task.streams).map((task) => [task.id, task]));
   return next.map((task) => {
     const existing = detailed.get(task.id);
-    if (!existing) return task;
+    const normalized = normalizeTaskUpdate(task);
+    if (!existing) return normalized;
+    if (!shouldPreserveTaskDetails(normalized, existing)) return normalized;
     return {
-      ...existing,
-      ...task,
-      files: task.files ?? existing.files,
-      streams: task.streams ?? existing.streams,
-      subtitleLanguages: task.subtitleLanguages ?? existing.subtitleLanguages
+      ...normalized,
+      files: normalized.files ?? existing.files,
+      streams: normalized.streams ?? existing.streams,
+      subtitleLanguages: normalized.subtitleLanguages ?? existing.subtitleLanguages
     };
   });
 }
@@ -2020,7 +2027,59 @@ function upsertTask(tasks: TranscodeTask[], next: TranscodeTask) {
     found = true;
     return mergeTaskDetails([next], [task])[0];
   });
-  return found ? updated : [next, ...tasks];
+  return found ? updated : [normalizeTaskUpdate(next), ...tasks];
+}
+
+function normalizeTaskUpdate(task: TranscodeTask): TranscodeTask {
+  return {
+    ...task,
+    running: Boolean(task.running),
+    error: task.error,
+    startedAt: task.startedAt,
+    finishedAt: task.finishedAt,
+    encodedCodecs: task.encodedCodecs,
+    subtitleLanguages: task.subtitleLanguages,
+    streams: task.streams,
+    duration: task.duration,
+    width: task.width,
+    height: task.height,
+    files: task.files
+  };
+}
+
+function shouldPreserveTaskDetails(next: TranscodeTask, existing: TranscodeTask) {
+  return next.updatedAt === existing.updatedAt && next.state === existing.state;
+}
+
+function updateTaskStatusTask(status: TaskStatus | undefined, task: TranscodeTask) {
+  if (!status) return status;
+  const normalized = normalizeTaskUpdate(task);
+  if (!status.activeTasks?.length) {
+    return normalized.running ? { ...status, activeTasks: [normalized] } : status;
+  }
+  if (!normalized.running) {
+    return removeActiveTask(status, normalized.id);
+  }
+  return {
+    ...status,
+    activeTasks: upsertTask(status.activeTasks, normalized)
+  };
+}
+
+function removeActiveTask(status: TaskStatus | undefined, id: string) {
+  if (!status?.activeTasks?.length) return status;
+  return {
+    ...status,
+    activeTasks: status.activeTasks.filter((task) => task.id !== id)
+  };
+}
+
+function removeActiveTasks(status: TaskStatus | undefined, ids: Set<string>) {
+  if (!status?.activeTasks?.length) return status;
+  return {
+    ...status,
+    activeTasks: status.activeTasks.filter((task) => !ids.has(task.id))
+  };
 }
 
 function uniqueMediaItems(items: MediaItem[]) {

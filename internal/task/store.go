@@ -356,16 +356,26 @@ func (s *Store) Retry(ctx context.Context, id string) (*Task, error) {
 		s.mu.Unlock()
 		return nil, err
 	}
-	if task.InputPath == "" {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("task has no input path")
-	}
 	if task.State == StateQueued || task.State == StateRunning {
 		s.mu.Unlock()
 		return nil, ErrTaskActive
 	}
+	inputPath, err := s.recoverInputPath(task)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	outputDir, err := s.taskDir(task.ID)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	if err := os.RemoveAll(outputDir); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
 	now := time.Now().UTC()
-	resetTaskForQueue(task, task.InputPath, task.OutputDir, now)
+	resetTaskForQueue(task, inputPath, outputDir, now)
 	if err := s.write(task); err != nil {
 		s.mu.Unlock()
 		return nil, err
