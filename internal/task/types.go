@@ -119,4 +119,5 @@ type ListStatus struct {
 	Refreshing  bool       `json:"refreshing"`
 	RefreshedAt *time.Time `json:"refreshedAt,omitempty"`
 	Error       string     `json:"error,omitempty"`
+	ActiveTasks []Task     `json:"activeTasks,omitempty"`
 }

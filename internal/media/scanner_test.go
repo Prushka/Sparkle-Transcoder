@@ -134,6 +134,49 @@ func TestScannerLoadCacheRestoresLastFinishedAt(t *testing.T) {
 	}
 }
 
+func TestScannerStatusKeepsRunningItemProgress(t *testing.T) {
+	root := testMediaRoot(t)
+	scanner := NewScanner(testConfig(t, root))
+	scanner.mu.Lock()
+	scanner.index = NewIndex(root)
+	scanner.status.Running = true
+	scanner.status.Items = 42
+	scanner.mu.Unlock()
+
+	status := scanner.Status()
+	if status.Items != 42 {
+		t.Fatalf("items = %d, want live running progress", status.Items)
+	}
+}
+
+func TestScannerFullScansWhenScanConfigChanges(t *testing.T) {
+	root := testMediaRoot(t)
+	cfg := testConfig(t, root)
+	cfg.MediaLibraries = []string{"Movies"}
+	movie := filepath.Join(root, "Movies", "Example Movie (2026)", "Example Movie (2026).mkv")
+	episode := filepath.Join(root, "TV-Shows", "Example Show", "Season 1", "Example Show - S01E01 - Pilot.mkv")
+	writeFile(t, movie, "movie")
+	writeFile(t, episode, "episode")
+
+	scanner := NewScanner(cfg)
+	idx, err := scanner.Scan(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Items) != 1 {
+		t.Fatalf("initial items = %d, want 1", len(idx.Items))
+	}
+
+	cfg.MediaLibraries = []string{"Movies", "TV-Shows"}
+	idx, err = scanner.Scan(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Items) != 2 {
+		t.Fatalf("items after scan config change = %d, want full rescan with 2 items", len(idx.Items))
+	}
+}
+
 func testMediaRoot(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "Managed-Videos")

@@ -114,6 +114,7 @@ export type TaskStatus = {
   refreshing: boolean;
   refreshedAt?: string;
   error?: string;
+  activeTasks?: TranscodeTask[];
 };
 
 export type TaskListResponse = {

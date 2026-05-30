@@ -55,7 +55,7 @@ func (s *Scanner) Status() ScanStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	status := s.status
-	if s.index != nil {
+	if s.index != nil && !status.Running {
 		status.Items = len(s.index.Items)
 	}
 	return status
@@ -133,13 +133,15 @@ func (s *Scanner) Scan(ctx context.Context, force bool) (*Index, error) {
 
 func (s *Scanner) scan(ctx context.Context, force bool) (*Index, int, error) {
 	session := newScanSession()
+	scanConfig := s.scanConfigState()
 	idx, err := s.readCache()
 	if err != nil {
 		log.Infof("starting without scan cache: %v", err)
 		idx = NewIndex(s.cfg.MediaRoot)
 	}
-	if force || !s.cfg.IncrementalScan || len(idx.Items) == 0 || idx.MediaRoot != s.cfg.MediaRoot {
+	if force || !s.cfg.IncrementalScan || len(idx.Items) == 0 || idx.MediaRoot != s.cfg.MediaRoot || !sameScanConfig(idx.ScanConfig, scanConfig) {
 		next := NewIndex(s.cfg.MediaRoot)
+		next.ScanConfig = scanConfig
 		if err := s.fullScan(ctx, next, session); err != nil {
 			return nil, 0, err
 		}
@@ -148,6 +150,7 @@ func (s *Scanner) scan(ctx context.Context, force bool) (*Index, int, error) {
 	}
 
 	next := cloneIndex(idx)
+	next.ScanConfig = scanConfig
 	changed, err := s.incrementalScan(ctx, next, session)
 	if err != nil {
 		return nil, changed, err
@@ -511,6 +514,69 @@ func (s *Scanner) skipPath(path string) bool {
 	return strings.HasPrefix(filepath.Base(path), ".")
 }
 
+func (s *Scanner) scanConfigState() ScanConfigState {
+	return ScanConfigState{
+		Libraries:   normalizeScanPaths(s.cfg.MediaLibraries, false),
+		ExcludeDirs: normalizeScanPaths(s.cfg.MediaExcludeDirs, true),
+		OutputRel:   s.outputRel(),
+	}
+}
+
+func (s *Scanner) outputRel() string {
+	if strings.TrimSpace(s.cfg.Output) == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(s.cfg.MediaRoot, s.cfg.Output)
+	if err != nil {
+		return filepath.ToSlash(filepath.Clean(s.cfg.Output))
+	}
+	return filepath.ToSlash(filepath.Clean(rel))
+}
+
+func normalizeScanPaths(values []string, skipRoot bool) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		clean := filepath.ToSlash(filepath.Clean(trimmed))
+		if skipRoot && clean == "." {
+			continue
+		}
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		out = append(out, clean)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sameScanConfig(left ScanConfigState, right ScanConfigState) bool {
+	if left.OutputRel != right.OutputRel {
+		return false
+	}
+	if !sameStringSlice(left.Libraries, right.Libraries) {
+		return false
+	}
+	return sameStringSlice(left.ExcludeDirs, right.ExcludeDirs)
+}
+
+func sameStringSlice(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Scanner) rel(path string) string {
 	rel, err := filepath.Rel(s.cfg.MediaRoot, path)
 	if err != nil {
@@ -584,6 +650,7 @@ func cloneIndex(idx *Index) *Index {
 	next := &Index{
 		Version:     idx.Version,
 		MediaRoot:   idx.MediaRoot,
+		ScanConfig:  cloneScanConfig(idx.ScanConfig),
 		GeneratedAt: idx.GeneratedAt,
 		Items:       make(map[string]Item, len(idx.Items)),
 		Dirs:        make(map[string]DirectoryState, len(idx.Dirs)),
@@ -595,6 +662,14 @@ func cloneIndex(idx *Index) *Index {
 		next.Dirs[key] = dir
 	}
 	return next
+}
+
+func cloneScanConfig(scanConfig ScanConfigState) ScanConfigState {
+	return ScanConfigState{
+		Libraries:   append([]string(nil), scanConfig.Libraries...),
+		ExcludeDirs: append([]string(nil), scanConfig.ExcludeDirs...),
+		OutputRel:   scanConfig.OutputRel,
+	}
 }
 
 func absInt(v int) int {

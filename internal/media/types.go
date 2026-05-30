@@ -64,9 +64,16 @@ type DirectoryState struct {
 type Index struct {
 	Version     int                       `json:"version"`
 	MediaRoot   string                    `json:"mediaRoot"`
+	ScanConfig  ScanConfigState           `json:"scanConfig,omitempty"`
 	GeneratedAt time.Time                 `json:"generatedAt"`
 	Items       map[string]Item           `json:"items"`
 	Dirs        map[string]DirectoryState `json:"dirs"`
+}
+
+type ScanConfigState struct {
+	Libraries   []string `json:"libraries,omitempty"`
+	ExcludeDirs []string `json:"excludeDirs,omitempty"`
+	OutputRel   string   `json:"outputRel,omitempty"`
 }
 
 type ScanStatus struct {

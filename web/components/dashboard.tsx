@@ -113,6 +113,8 @@ export function Dashboard() {
   const [deleteFilteredOpen, setDeleteFilteredOpen] = React.useState(false);
   const [taskRefreshing, setTaskRefreshing] = React.useState(false);
   const taskRefreshInFlight = React.useRef(false);
+  const taskListInFlight = React.useRef(false);
+  const scanWasRunning = React.useRef(false);
 
   const loadInitial = React.useCallback(async () => {
     try {
@@ -182,6 +184,24 @@ export function Dashboard() {
     }
   }, []);
 
+  const loadTaskList = React.useCallback(async () => {
+    if (taskListInFlight.current) return;
+    taskListInFlight.current = true;
+    try {
+      const taskResponse = await api.tasks();
+      setState((current) => ({
+        ...current,
+        tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
+        taskStatus: taskResponse.status
+      }));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load tasks");
+    } finally {
+      taskListInFlight.current = false;
+    }
+  }, []);
+
   const refreshTasks = React.useCallback(async () => {
     if (taskRefreshInFlight.current) return;
     taskRefreshInFlight.current = true;
@@ -209,10 +229,31 @@ export function Dashboard() {
   }, [activeTab, loadLibrary]);
 
   React.useEffect(() => {
+    const running = Boolean(state.scan?.running);
+    if (scanWasRunning.current && !running && activeTab === "library") {
+      void loadLibrary();
+    }
+    scanWasRunning.current = running;
+  }, [activeTab, loadLibrary, state.scan?.running]);
+
+  React.useEffect(() => {
     if (activeTab === "tasks") {
       void loadTasks();
     }
   }, [activeTab, loadTasks]);
+
+  const hasLiveTasks = React.useMemo(
+    () => state.tasks.some(isInProgressTask) || Boolean(state.taskStatus?.activeTasks?.length),
+    [state.taskStatus?.activeTasks?.length, state.tasks]
+  );
+
+  React.useEffect(() => {
+    if (!hasLiveTasks) return;
+    const interval = window.setInterval(() => {
+      void loadTaskList();
+    }, 3000);
+    return () => window.clearInterval(interval);
+  }, [hasLiveTasks, loadTaskList]);
 
   const libraries = React.useMemo(() => Array.from(new Set(state.media.map((item) => item.library).filter(Boolean))).sort(), [state.media]);
   const queueScope = React.useMemo(() => {
@@ -238,6 +279,8 @@ export function Dashboard() {
   const visibleTasks = React.useMemo(() => filteredTasks.slice(0, taskLimit), [filteredTasks, taskLimit]);
   const deletableFilteredTasks = React.useMemo(() => filteredTasks.filter(canDeleteTask), [filteredTasks]);
   const tasksRefreshing = taskRefreshing || Boolean(state.taskStatus?.refreshing);
+  const activeRunnerTasks = state.taskStatus?.activeTasks ?? [];
+  const taskStatDetail = activeRunnerTasks.length ? `Now ${activeTaskSummary(activeRunnerTasks)}` : `${countInProgressTasks(state.tasks)} in progress`;
 
   React.useEffect(() => {
     setMediaLimit(150);
@@ -467,10 +510,12 @@ export function Dashboard() {
 
           <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Stat icon={HardDrive} label="Media" value={state.media.length.toLocaleString()} detail={`${filtered.length.toLocaleString()} visible`} />
-            <Stat icon={ListVideo} label="Tasks" value={state.tasks.length.toLocaleString()} detail={`${countInProgressTasks(state.tasks)} in progress`} />
+            <Stat icon={ListVideo} label="Tasks" value={state.tasks.length.toLocaleString()} detail={taskStatDetail} />
             <Stat icon={BadgeCheck} label="Complete" value={countByState(state.tasks, "complete").toLocaleString()} detail={`${countByState(state.tasks, "failed")} failed`} />
             <Stat icon={Gauge} label="Scan" value={state.scan?.running ? "Running" : "Idle"} detail={scanDetail(state.scan)} />
           </section>
+
+          <ActiveTaskStrip tasks={activeRunnerTasks} />
 
           <ToolReadinessSection tools={state.tools} />
 
@@ -668,6 +713,35 @@ function ToolReadinessSection({ tools }: { tools: ToolReadiness[] }) {
             </div>
           );
         })}
+      </div>
+    </section>
+  );
+}
+
+function ActiveTaskStrip({ tasks }: { tasks: TranscodeTask[] }) {
+  if (!tasks.length) return null;
+  return (
+    <section className="mb-5 rounded-lg border bg-card/60 p-3">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
+            <Loader2 className="size-5 animate-spin" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-xs text-muted-foreground">Processing now</div>
+            <div className="truncate text-sm font-medium">{activeTaskSummary(tasks)}</div>
+          </div>
+        </div>
+        <div className="flex min-w-0 flex-wrap gap-2 md:justify-end">
+          {tasks.map((task) => (
+            <Badge key={task.id} variant="secondary" className="max-w-full">
+              <ListVideo className="mr-1 size-3 shrink-0" />
+              <span className="min-w-0 truncate">
+                {taskPhaseLabel(task.state)} / {task.id}
+              </span>
+            </Badge>
+          ))}
+        </div>
       </div>
     </section>
   );
@@ -1881,6 +1955,38 @@ function stateProgress(state: string) {
     default:
       return 15;
   }
+}
+
+function taskPhaseLabel(state: string) {
+  switch (state) {
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Starting";
+    case "incomplete":
+      return "Preparing";
+    case "streams_extracted":
+      return "Transcoding";
+    case "complete":
+      return "Complete";
+    case "failed":
+      return "Failed";
+    case "canceled":
+      return "Canceled";
+    default:
+      return state || "Unknown";
+  }
+}
+
+function activeTaskSummary(tasks: TranscodeTask[]) {
+  const names = tasks.map(activeTaskName).filter(Boolean);
+  if (!names.length) return `${tasks.length.toLocaleString()} active`;
+  if (names.length === 1) return names[0];
+  return `${names[0]} + ${names.length - 1}`;
+}
+
+function activeTaskName(task: TranscodeTask) {
+  return task.input || task.inputRelPath || task.inputPath || task.id;
 }
 
 function scanDetail(scan?: ScanStatus) {

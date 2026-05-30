@@ -259,6 +259,214 @@ func TestWorkerUpdatesListCacheAfterRun(t *testing.T) {
 	}
 }
 
+func TestRunnerUpdateHookReportsIntermediateStates(t *testing.T) {
+	output := t.TempDir()
+	input := filepath.Join(t.TempDir(), "Movies", "Example", "Example.mkv")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	enableEncode := false
+	enableSprites := false
+	extractStreams := false
+	now := time.Now().UTC()
+	task := &Task{
+		ID:        "abc12",
+		InputPath: input,
+		Input:     filepath.Base(input),
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateQueued,
+		Params: Params{
+			EnableEncode:   &enableEncode,
+			EnableSprites:  &enableSprites,
+			ExtractStreams: &extractStreams,
+			VideoExt:       "mp4",
+			AudioKbps:      144,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	runner := NewRunner(&config.Config{Output: output, Ffprobe: "ffprobe", Ffmpeg: "ffmpeg"}, nil, fakeExec{})
+	states := []string{}
+	runner.SetUpdateHook(func(task *Task) {
+		states = append(states, task.State)
+	})
+	if err := runner.Run(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{StateRunning, StateIncomplete, StateStreamsExtracted, StateComplete} {
+		if !stringSliceContains(states, want) {
+			t.Fatalf("runner update states = %+v, missing %s", states, want)
+		}
+	}
+}
+
+func TestRecordRunnerTaskUpdatesCacheAndStatus(t *testing.T) {
+	output := t.TempDir()
+	now := time.Now().UTC()
+	task := &Task{
+		ID:        "abc12",
+		Input:     "movie.mkv",
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateQueued,
+		Params:    Params{},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &Store{
+		cfg:     &config.Config{Output: output},
+		cancels: map[string]context.CancelFunc{task.ID: cancel},
+		cache:   []Task{compactTask(*task)},
+	}
+	running := *task
+	running.State = StateStreamsExtracted
+	running.UpdatedAt = now.Add(time.Second)
+	store.recordRunnerTask(&running)
+
+	tasks, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].State != StateStreamsExtracted || !tasks[0].Running {
+		t.Fatalf("List task = %+v, want active streams-extracted task", tasks)
+	}
+	status := store.Status()
+	if len(status.ActiveTasks) != 1 || status.ActiveTasks[0].ID != task.ID || status.ActiveTasks[0].State != StateStreamsExtracted || !status.ActiveTasks[0].Running {
+		t.Fatalf("active tasks = %+v, want active runner task", status.ActiveTasks)
+	}
+}
+
+func TestRecoverActiveRequeuesPersistedActiveTasks(t *testing.T) {
+	root := t.TempDir()
+	output := t.TempDir()
+	input := filepath.Join(root, "Movies", "Example", "Example.mkv")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC().Add(-time.Minute)
+	task := &Task{
+		ID:             "abc12",
+		MediaID:        "media-id",
+		InputPath:      input,
+		InputRelPath:   "Movies/Example/Example.mkv",
+		InputParent:    filepath.Dir(input),
+		Input:          filepath.Base(input),
+		OutputDir:      filepath.Join(output, "abc12"),
+		State:          StateStreamsExtracted,
+		Running:        true,
+		Error:          "previous failure",
+		Params:         Params{VideoExt: "mp4"},
+		CreatedAt:      started.Add(-time.Minute),
+		UpdatedAt:      started,
+		StartedAt:      &started,
+		EncodedCodecs:  []string{"hevc"},
+		Streams:        []Stream{{CodecType: subtitleType, Language: "eng", Index: 2}},
+		Duration:       12,
+		Width:          1920,
+		Height:         1080,
+		EncodedExt:     "mp4",
+		DominantColors: []string{"#111111"},
+		Files:          map[string]int64{"stale.mp4": 5},
+		Media:          &media.Item{ID: "media-id"},
+	}
+	if err := writeTask(task); err != nil {
+		t.Fatal(err)
+	}
+	staleFile := filepath.Join(task.OutputDir, "stale.mp4")
+	if err := os.WriteFile(staleFile, []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &Store{
+		cfg:     &config.Config{MediaRoot: root, Output: output},
+		queue:   make(chan string, 1),
+		cancels: map[string]context.CancelFunc{},
+	}
+	recovered, err := store.RecoverActive(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+	select {
+	case id := <-store.queue:
+		if id != task.ID {
+			t.Fatalf("queued id = %s, want %s", id, task.ID)
+		}
+	default:
+		t.Fatal("task was not enqueued")
+	}
+	if _, err := os.Stat(staleFile); !os.IsNotExist(err) {
+		t.Fatalf("stale output still exists, stat error = %v", err)
+	}
+	got, err := decodeTask(mustReadFile(t, filepath.Join(output, task.ID, JobFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateQueued || got.Running || got.Error != "" || got.StartedAt != nil || got.FinishedAt != nil {
+		t.Fatalf("recovered task status = %+v, want clean queued task", got)
+	}
+	if len(got.EncodedCodecs) != 0 || len(got.Streams) != 0 || got.Duration != 0 || got.Width != 0 || got.Height != 0 || got.EncodedExt != "" || got.Files != nil || got.Media != nil {
+		t.Fatalf("recovered task kept generated fields: %+v", got)
+	}
+	tasks, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].State != StateQueued {
+		t.Fatalf("cache tasks = %+v, want recovered queued task", tasks)
+	}
+}
+
+func TestRefreshKeepsActiveRunnerTaskAfterStaleScan(t *testing.T) {
+	output := t.TempDir()
+	now := time.Now().UTC()
+	task := &Task{
+		ID:        "abc12",
+		Input:     "movie.mkv",
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateIncomplete,
+		Params:    Params{},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := writeTask(task); err != nil {
+		t.Fatal(err)
+	}
+	active := *task
+	active.State = StateStreamsExtracted
+	active.UpdatedAt = now.Add(time.Second)
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &Store{
+		cfg:     &config.Config{Output: output},
+		cancels: map[string]context.CancelFunc{task.ID: cancel},
+		active:  map[string]Task{task.ID: active},
+		cache:   []Task{cacheTask(active)},
+	}
+	if err := store.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].State != StateStreamsExtracted || !tasks[0].Running {
+		t.Fatalf("tasks = %+v, want active runner task to win over stale scan", tasks)
+	}
+}
+
 func TestListAndReadMarkActivelyRunningTask(t *testing.T) {
 	output := t.TempDir()
 	taskDir := filepath.Join(output, "abc12")
@@ -502,4 +710,13 @@ func testItem(path string) media.Item {
 		Size:     stat.Size(),
 		ModTime:  stat.ModTime(),
 	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

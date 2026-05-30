@@ -29,6 +29,7 @@ type Store struct {
 	queue   chan string
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
+	active  map[string]Task
 
 	cacheMu    sync.RWMutex
 	cache      []Task
@@ -57,6 +58,10 @@ func NewStoreWithContext(ctx context.Context, cfg *config.Config, scanner *media
 		stop:    stop,
 		queue:   make(chan string, 256),
 		cancels: map[string]context.CancelFunc{},
+		active:  map[string]Task{},
+	}
+	if runner != nil {
+		runner.SetUpdateHook(store.recordRunnerTask)
 	}
 	for i := 0; i < cfg.TaskConcurrency; i++ {
 		store.wg.Add(1)
@@ -125,20 +130,27 @@ func (s *Store) List(filter ListFilter) ([]Task, error) {
 
 func (s *Store) Status() ListStatus {
 	s.cacheMu.RLock()
-	defer s.cacheMu.RUnlock()
 	var refreshedAt *time.Time
 	if !s.cacheAt.IsZero() {
 		t := s.cacheAt
 		refreshedAt = &t
 	}
+	refreshing := s.refreshing
+	cacheErr := s.cacheErr
+	s.cacheMu.RUnlock()
 	return ListStatus{
-		Refreshing:  s.refreshing,
+		Refreshing:  refreshing,
 		RefreshedAt: refreshedAt,
-		Error:       s.cacheErr,
+		Error:       cacheErr,
+		ActiveTasks: s.activeTasks(),
 	}
 }
 
 func (s *Store) Refresh(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	scanStarted := time.Now().UTC()
 	s.cacheMu.Lock()
 	if s.refreshing {
 		s.cacheMu.Unlock()
@@ -156,7 +168,7 @@ func (s *Store) Refresh(ctx context.Context) error {
 		return err
 	}
 	s.cacheErr = ""
-	s.cache = cacheTasks(tasks)
+	s.cache = s.mergeRefreshTasks(cacheTasks(tasks), scanStarted)
 	return nil
 }
 
@@ -353,11 +365,7 @@ func (s *Store) Retry(ctx context.Context, id string) (*Task, error) {
 		return nil, ErrTaskActive
 	}
 	now := time.Now().UTC()
-	task.State = StateQueued
-	task.Error = ""
-	task.StartedAt = nil
-	task.FinishedAt = nil
-	task.UpdatedAt = now
+	resetTaskForQueue(task, task.InputPath, task.OutputDir, now)
 	if err := s.write(task); err != nil {
 		s.mu.Unlock()
 		return nil, err
@@ -368,6 +376,106 @@ func (s *Store) Retry(ctx context.Context, id string) (*Task, error) {
 		return nil, err
 	}
 	return task, nil
+}
+
+func (s *Store) RecoverActive(ctx context.Context) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tasks, err := s.scanOutput(ctx)
+	if err != nil {
+		return 0, err
+	}
+	recovered := 0
+	errs := make([]error, 0)
+	for _, task := range tasks {
+		if err := ctx.Err(); err != nil {
+			return recovered, errors.Join(append(errs, err)...)
+		}
+		if !isRecoverableState(task.State) {
+			continue
+		}
+		next := task
+		if err := s.recoverTask(ctx, &next); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", task.ID, err))
+			continue
+		}
+		recovered++
+	}
+	return recovered, errors.Join(errs...)
+}
+
+func (s *Store) recoverTask(ctx context.Context, task *Task) error {
+	if err := validateTaskID(task.ID); err != nil {
+		return err
+	}
+	if s.queue == nil {
+		return fmt.Errorf("task queue is not initialized")
+	}
+	inputPath, err := s.recoverInputPath(task)
+	if err != nil {
+		return err
+	}
+	outputDir, err := s.taskDir(task.ID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+
+	s.mu.Lock()
+	if s.cancels[task.ID] != nil {
+		s.mu.Unlock()
+		return ErrTaskActive
+	}
+	if err := os.RemoveAll(outputDir); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	resetTaskForQueue(task, inputPath, outputDir, now)
+	if err := s.write(task); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+
+	s.upsertCache(task)
+	if err := s.enqueue(task.ID); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+func (s *Store) recoverInputPath(task *Task) (string, error) {
+	candidates := []string{task.InputPath}
+	if task.InputParent != "" && task.Input != "" {
+		candidates = append(candidates, filepath.Join(task.InputParent, task.Input))
+	}
+	if task.InputRelPath != "" && s.cfg.MediaRoot != "" {
+		candidates = append(candidates, filepath.Join(s.cfg.MediaRoot, filepath.FromSlash(task.InputRelPath)))
+	}
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if !filepath.IsAbs(candidate) && s.cfg.MediaRoot != "" {
+			candidate = filepath.Join(s.cfg.MediaRoot, candidate)
+		}
+		abs, err := filepath.Abs(candidate)
+		if err != nil {
+			continue
+		}
+		if s.cfg.MediaRoot != "" {
+			if err := media.ValidateUnderRoot(s.cfg.MediaRoot, abs); err != nil {
+				continue
+			}
+		}
+		stat, err := os.Stat(abs)
+		if err == nil && !stat.IsDir() {
+			return abs, nil
+		}
+	}
+	return "", fmt.Errorf("input path is missing or unavailable")
 }
 
 func (s *Store) Delete(id string) error {
@@ -449,7 +557,85 @@ func (s *Store) claimQueued(id string) (*Task, context.Context, context.CancelFu
 func (s *Store) releaseRunning(id string) {
 	s.mu.Lock()
 	delete(s.cancels, id)
+	delete(s.active, id)
 	s.mu.Unlock()
+}
+
+func (s *Store) recordRunnerTask(task *Task) {
+	if task == nil || task.ID == "" {
+		return
+	}
+	s.upsertCache(task)
+	active := cacheTask(*task)
+	active.Running = true
+	s.mu.Lock()
+	if s.active == nil {
+		s.active = map[string]Task{}
+	}
+	s.active[active.ID] = active
+	s.mu.Unlock()
+}
+
+func (s *Store) activeTasks() []Task {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tasks := make([]Task, 0, len(s.active))
+	for _, task := range s.active {
+		task.Running = true
+		tasks = append(tasks, cloneTask(task))
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		left := tasks[i].UpdatedAt
+		right := tasks[j].UpdatedAt
+		if tasks[i].StartedAt != nil {
+			left = *tasks[i].StartedAt
+		}
+		if tasks[j].StartedAt != nil {
+			right = *tasks[j].StartedAt
+		}
+		if left.Equal(right) {
+			return tasks[i].ID < tasks[j].ID
+		}
+		return left.Before(right)
+	})
+	return tasks
+}
+
+func (s *Store) mergeRefreshTasks(tasks []Task, scanStarted time.Time) []Task {
+	byID := make(map[string]int, len(tasks))
+	next := tasks[:0]
+	for _, task := range tasks {
+		if !taskFileExists(task.OutputDir) {
+			continue
+		}
+		byID[task.ID] = len(next)
+		next = append(next, task)
+	}
+	for _, task := range s.cache {
+		if task.UpdatedAt.Before(scanStarted) {
+			continue
+		}
+		if idx, ok := byID[task.ID]; ok {
+			next[idx] = cloneTask(task)
+			continue
+		}
+		byID[task.ID] = len(next)
+		next = append(next, cloneTask(task))
+	}
+	s.mu.Lock()
+	for _, task := range s.active {
+		active := cacheTask(task)
+		active.Running = true
+		if idx, ok := byID[active.ID]; ok {
+			next[idx] = active
+			continue
+		}
+		byID[active.ID] = len(next)
+		next = append(next, active)
+	}
+	s.mu.Unlock()
+	sortTasksByUpdatedAt(next)
+	return next
 }
 
 func (s *Store) taskDir(id string) (string, error) {
@@ -632,6 +818,14 @@ func isTaskWriteTemp(name string) bool {
 	return strings.HasPrefix(name, ".job-") && strings.HasSuffix(name, ".tmp")
 }
 
+func taskFileExists(outputDir string) bool {
+	if outputDir == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(outputDir, JobFile))
+	return err == nil
+}
+
 func newestModTime(dir string) time.Time {
 	var newest time.Time
 	entries, err := os.ReadDir(dir)
@@ -709,8 +903,33 @@ func firstNonEmpty(values ...string) string {
 
 func cloneTasks(tasks []Task) []Task {
 	out := make([]Task, len(tasks))
-	copy(out, tasks)
+	for i, task := range tasks {
+		out[i] = cloneTask(task)
+	}
 	return out
+}
+
+func cloneTask(task Task) Task {
+	task.EncodedCodecs = append([]string(nil), task.EncodedCodecs...)
+	task.SubtitleLangs = append([]string(nil), task.SubtitleLangs...)
+	task.Streams = append([]Stream(nil), task.Streams...)
+	task.Chapters = append([]Chapter(nil), task.Chapters...)
+	task.DominantColors = append([]string(nil), task.DominantColors...)
+	if task.MappedAudio != nil {
+		mapped := make(map[string][]Stream, len(task.MappedAudio))
+		for key, streams := range task.MappedAudio {
+			mapped[key] = append([]Stream(nil), streams...)
+		}
+		task.MappedAudio = mapped
+	}
+	if task.Files != nil {
+		files := make(map[string]int64, len(task.Files))
+		for key, size := range task.Files {
+			files[key] = size
+		}
+		task.Files = files
+	}
+	return task
 }
 
 func (s *Store) markRunning(tasks []Task) {
@@ -738,12 +957,14 @@ func cacheTasks(tasks []Task) []Task {
 }
 
 func cacheTask(task Task) Task {
+	task = cloneTask(task)
 	task.SubtitleLangs = subtitleLanguages(task.Streams)
 	task.Media = nil
 	return task
 }
 
 func compactTask(task Task) Task {
+	task = cloneTask(task)
 	task.SubtitleLangs = subtitleLanguages(task.Streams)
 	task.Streams = nil
 	task.MappedAudio = nil
@@ -752,6 +973,60 @@ func compactTask(task Task) Task {
 	task.Media = nil
 	task.Files = nil
 	return task
+}
+
+func resetTaskForQueue(task *Task, inputPath string, outputDir string, now time.Time) {
+	task.InputPath = inputPath
+	if task.Input == "" {
+		task.Input = filepath.Base(inputPath)
+	}
+	if task.InputParent == "" {
+		task.InputParent = filepath.Dir(inputPath)
+	}
+	task.OutputDir = outputDir
+	task.State = StateQueued
+	task.Running = false
+	task.Error = ""
+	task.StartedAt = nil
+	task.FinishedAt = nil
+	task.UpdatedAt = now
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = now
+	}
+	if stat, err := os.Stat(inputPath); err == nil {
+		task.OriSize = stat.Size()
+		task.OriModTime = stat.ModTime().Unix()
+	}
+	task.EncodedCodecs = nil
+	task.SubtitleLangs = nil
+	task.MappedAudio = nil
+	task.Streams = nil
+	task.Duration = 0
+	task.Width = 0
+	task.Height = 0
+	task.EncodedExt = ""
+	task.Chapters = nil
+	task.DominantColors = nil
+	task.Files = nil
+	task.Media = nil
+}
+
+func isRecoverableState(state string) bool {
+	switch state {
+	case StateQueued, StateRunning, StateIncomplete, StateStreamsExtracted:
+		return true
+	default:
+		return false
+	}
+}
+
+func sortTasksByUpdatedAt(tasks []Task) {
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].UpdatedAt.Equal(tasks[j].UpdatedAt) {
+			return tasks[i].ID < tasks[j].ID
+		}
+		return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt)
+	})
 }
 
 func subtitleLanguages(streams []Stream) []string {

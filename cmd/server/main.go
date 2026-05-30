@@ -53,6 +53,13 @@ func main() {
 		if err := store.Refresh(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Errorf("startup task refresh failed: %v", err)
 		}
+		recovered, err := store.RecoverActive(ctx)
+		if recovered > 0 {
+			log.Infof("recovered %d queued or in-progress task(s)", recovered)
+		}
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Errorf("startup task recovery skipped some work: %v", err)
+		}
 	}()
 	server := api.NewWithContext(ctx, cfg, scanner, store)
 

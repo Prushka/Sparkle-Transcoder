@@ -42,13 +42,21 @@ var imageSubtitleExt = map[string]string{
 }
 
 type Runner struct {
-	cfg     *config.Config
-	scanner *media.Scanner
-	exec    executil.Runner
+	cfg      *config.Config
+	scanner  *media.Scanner
+	exec     executil.Runner
+	updateMu sync.RWMutex
+	onUpdate func(*Task)
 }
 
 func NewRunner(cfg *config.Config, scanner *media.Scanner, execRunner executil.Runner) *Runner {
 	return &Runner{cfg: cfg, scanner: scanner, exec: execRunner}
+}
+
+func (r *Runner) SetUpdateHook(hook func(*Task)) {
+	r.updateMu.Lock()
+	defer r.updateMu.Unlock()
+	r.onUpdate = hook
 }
 
 func (r *Runner) Run(ctx context.Context, task *Task) error {
@@ -57,7 +65,7 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 	task.State = StateRunning
 	task.UpdatedAt = now
 	task.Error = ""
-	if err := writeTask(task); err != nil {
+	if err := r.writeTask(task); err != nil {
 		return err
 	}
 
@@ -66,7 +74,7 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 	}
 	task.State = StateIncomplete
 	task.UpdatedAt = time.Now().UTC()
-	if err := writeTask(task); err != nil {
+	if err := r.writeTask(task); err != nil {
 		return err
 	}
 
@@ -97,7 +105,7 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 	}
 	task.State = StateStreamsExtracted
 	task.UpdatedAt = time.Now().UTC()
-	if err := writeTask(task); err != nil {
+	if err := r.writeTask(task); err != nil {
 		return err
 	}
 
@@ -126,7 +134,7 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 	task.FinishedAt = &now
 	task.UpdatedAt = now
 	task.Files = collectFiles(task.OutputDir)
-	return writeTask(task)
+	return r.writeTask(task)
 }
 
 func (r *Runner) fail(task *Task, err error) error {
@@ -141,7 +149,7 @@ func (r *Runner) fail(task *Task, err error) error {
 		task.Error = err.Error()
 	}
 	task.Files = collectFiles(task.OutputDir)
-	return writeTask(task)
+	return r.writeTask(task)
 }
 
 func (r *Runner) extractChapters(ctx context.Context, task *Task) error {
@@ -155,7 +163,7 @@ func (r *Runner) extractChapters(ctx context.Context, task *Task) error {
 	}
 	task.Chapters = probe.Chapters
 	task.UpdatedAt = time.Now().UTC()
-	return writeTask(task)
+	return r.writeTask(task)
 }
 
 func (r *Runner) extractStreams(ctx context.Context, task *Task, source string, streamType string) error {
@@ -181,7 +189,7 @@ func (r *Runner) extractStreams(ctx context.Context, task *Task, source string, 
 		return fmt.Errorf("no %s streams found in %s", streamType, filepath.Base(source))
 	}
 	task.UpdatedAt = time.Now().UTC()
-	return writeTask(task)
+	return r.writeTask(task)
 }
 
 func (r *Runner) extractOneStream(ctx context.Context, task *Task, source string, stream StreamInfo) error {
@@ -314,7 +322,7 @@ func (r *Runner) ffmpegCopyOnly(ctx context.Context, task *Task) error {
 	task.EncodedCodecs = appendUnique(task.EncodedCodecs, "hevc")
 	task.EncodedExt = task.Params.VideoExt
 	task.UpdatedAt = time.Now().UTC()
-	return writeTask(task)
+	return r.writeTask(task)
 }
 
 func (r *Runner) handbrakeTranscode(ctx context.Context, task *Task) error {
@@ -367,7 +375,7 @@ func (r *Runner) handbrakeTranscode(ctx context.Context, task *Task) error {
 		return err
 	}
 	task.UpdatedAt = time.Now().UTC()
-	return writeTask(task)
+	return r.writeTask(task)
 }
 
 func (r *Runner) encoderSettings(encoder string) (cmd string, preset string, profile string, tune string, err error) {
@@ -401,7 +409,7 @@ func (r *Runner) mapAudioTracks(ctx context.Context, task *Task) error {
 		}
 	}
 	task.UpdatedAt = time.Now().UTC()
-	return writeTask(task)
+	return r.writeTask(task)
 }
 
 func (r *Runner) probe(ctx context.Context, task *Task) error {
@@ -429,7 +437,7 @@ func (r *Runner) probe(ctx context.Context, task *Task) error {
 		}
 	}
 	task.UpdatedAt = time.Now().UTC()
-	return writeTask(task)
+	return r.writeTask(task)
 }
 
 func (r *Runner) generateSprites(ctx context.Context, task *Task, videoFile string) error {
@@ -519,7 +527,20 @@ func (r *Runner) extractDominantColor(task *Task) error {
 		return err
 	}
 	task.DominantColors = []string{dominantcolor.Hex(dominantcolor.Find(img))}
-	return writeTask(task)
+	return r.writeTask(task)
+}
+
+func (r *Runner) writeTask(task *Task) error {
+	if err := writeTask(task); err != nil {
+		return err
+	}
+	r.updateMu.RLock()
+	hook := r.onUpdate
+	r.updateMu.RUnlock()
+	if hook != nil {
+		hook(task)
+	}
+	return nil
 }
 
 func (r *Runner) codecVideo(task *Task, codec string) string {
