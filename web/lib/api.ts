@@ -107,7 +107,10 @@ export type TranscodeTask = {
   width?: number;
   height?: number;
   files?: Record<string, number>;
+  oriSize?: number;
+  oriModTime?: number;
   legacy?: boolean;
+  media?: MediaItem;
 };
 
 export type TaskStatus = {

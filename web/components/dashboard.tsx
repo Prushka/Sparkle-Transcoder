@@ -67,12 +67,14 @@ type LoadState = {
 };
 
 type MediaTaskIndex = Map<string, TranscodeTask>;
+type CurrentMediaIndex = Map<string, MediaItem>;
 type QueueCreateMode = "replace" | "incomplete";
 type QueueMode = QueueCreateMode | "delete";
 type TriStateFilterState = "include" | "exclude";
 type TriStateFilters = Record<string, TriStateFilterState>;
 
 const IN_PROGRESS_FILTER = "In Progress";
+const NEW_VERSION_FILTER = "New Version";
 const LIVE_TASK_POLL_INTERVAL_MS = 30000;
 
 type TaskSelection = {
@@ -181,11 +183,12 @@ export function Dashboard() {
 
   const loadTasks = React.useCallback(async () => {
     try {
-      const [taskResponse, scan] = await Promise.all([api.tasks(), api.scanStatus()]);
+      const [taskResponse, mediaResponse] = await Promise.all([api.tasks(), api.media()]);
       setState((current) => ({
         ...current,
         ...mergeTaskResponse(taskResponse, current.tasks),
-        scan
+        media: mediaResponse.items,
+        scan: mediaResponse.status
       }));
       setError("");
     } catch (err) {
@@ -215,10 +218,12 @@ export function Dashboard() {
     taskRefreshInFlight.current = true;
     setTaskRefreshing(true);
     try {
-      const taskResponse = await api.refreshTasks();
+      const [taskResponse, mediaResponse] = await Promise.all([api.refreshTasks(), api.media()]);
       setState((current) => ({
         ...current,
-        ...mergeTaskResponse(taskResponse, current.tasks)
+        ...mergeTaskResponse(taskResponse, current.tasks),
+        media: mediaResponse.items,
+        scan: mediaResponse.status
       }));
       setError("");
     } catch (err) {
@@ -277,11 +282,12 @@ export function Dashboard() {
   }, [query, queueScope]);
   const visibleMedia = React.useMemo(() => filtered.slice(0, mediaLimit), [filtered, mediaLimit]);
   const mediaTaskIndex = React.useMemo(() => buildMediaTaskIndex(state.tasks), [state.tasks]);
+  const currentMediaIndex = React.useMemo(() => buildCurrentMediaIndex(state.media), [state.media]);
   const taskCodecOptions = React.useMemo(() => taskOptions(state.tasks, taskCodecs), [state.tasks]);
   const taskSubtitleOptions = React.useMemo(() => taskOptions(state.tasks, taskSubtitleLanguages), [state.tasks]);
   const filteredTasks = React.useMemo(
-    () => filterTasks(state.tasks, taskQuery, taskCompletion, taskStatusFilters, codecFilters, subtitleFilters),
-    [codecFilters, state.tasks, subtitleFilters, taskCompletion, taskQuery, taskStatusFilters]
+    () => filterTasks(state.tasks, taskQuery, taskCompletion, taskStatusFilters, codecFilters, subtitleFilters, currentMediaIndex),
+    [codecFilters, currentMediaIndex, state.tasks, subtitleFilters, taskCompletion, taskQuery, taskStatusFilters]
   );
   const visibleTasks = React.useMemo(() => filteredTasks.slice(0, taskLimit), [filteredTasks, taskLimit]);
   const deletableFilteredTasks = React.useMemo(() => filteredTasks.filter(canDeleteTask), [filteredTasks]);
@@ -869,7 +875,7 @@ function TaskToolbar({
             </div>
             <TriStateFilterGroup
               title="Task Status"
-              options={[IN_PROGRESS_FILTER]}
+              options={[IN_PROGRESS_FILTER, NEW_VERSION_FILTER]}
               filters={taskStatusFilters}
               onChange={onTaskStatusFiltersChange}
               emptyLabel="No task status options"
@@ -1146,7 +1152,7 @@ function MediaCard({
               <MediaBadges item={item} />
             </div>
             <MetaLine item={item} />
-            <MediaTaskIndicator task={task} />
+            <MediaTaskIndicator item={item} task={task} />
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
               <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{formatBytes(item.size)}</span>
               <div className="flex shrink-0 items-center gap-2">
@@ -1195,7 +1201,7 @@ function EpisodeRow({
               <MediaBadges item={item} />
             </div>
             <MetaLine item={item} />
-            <MediaTaskIndicator task={task} />
+            <MediaTaskIndicator item={item} task={task} />
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{item.ext.toUpperCase()} / {formatBytes(item.size)}</span>
               <div className="flex shrink-0 items-center gap-2">
@@ -1245,12 +1251,16 @@ function MediaBadges({ item }: { item: MediaItem }) {
   );
 }
 
-function MediaTaskIndicator({ task }: { task?: TranscodeTask }) {
+function MediaTaskIndicator({ item, task }: { item: MediaItem; task?: TranscodeTask }) {
   if (!task) return <div className="mt-2 min-h-6" aria-hidden="true" />;
   const complete = task.state === "complete";
   const inProgress = isInProgressTask(task);
+  const newVersion = mediaHasNewVersion(item, task);
+  const taskTip = newVersion
+    ? `Task ${task.id} is ${task.state}. Current media is ${formatBytes(item.size)}; task original was ${formatBytes(originalMediaSize(task) ?? 0)}.`
+    : `Task ${task.id} is ${task.state}`;
   return (
-    <Tip content={`Task ${task.id} is ${task.state}`}>
+    <Tip content={taskTip}>
       <div className="mt-2 flex min-h-6 min-w-0 flex-wrap items-center gap-1.5">
         <Badge variant="outline" className="shrink-0">
           <ListVideo className="mr-1 size-3" />
@@ -1260,6 +1270,12 @@ function MediaTaskIndicator({ task }: { task?: TranscodeTask }) {
           {complete ? <CheckCircle2 className="mr-1 size-3" /> : inProgress ? <Loader2 className="mr-1 size-3 animate-spin" /> : <CircleAlert className="mr-1 size-3" />}
           {complete ? "Complete" : inProgress ? "In progress" : "Incomplete"}
         </Badge>
+        {newVersion ? (
+          <Badge variant="warning" className="shrink-0">
+            <CircleAlert className="mr-1 size-3" />
+            New version
+          </Badge>
+        ) : null}
       </div>
     </Tip>
   );
@@ -1886,6 +1902,18 @@ function buildMediaTaskIndex(tasks: TranscodeTask[]) {
   return index;
 }
 
+function buildCurrentMediaIndex(items: MediaItem[]) {
+  const index: CurrentMediaIndex = new Map();
+  for (const item of items) {
+    for (const key of mediaKeys(item)) {
+      if (!index.has(key)) {
+        index.set(key, item);
+      }
+    }
+  }
+  return index;
+}
+
 function taskForMedia(item: MediaItem, index: MediaTaskIndex) {
   for (const key of mediaKeys(item)) {
     const task = index.get(key);
@@ -1973,6 +2001,30 @@ function uniqueKeys(keys: string[]) {
   return Array.from(new Set(keys.filter(Boolean)));
 }
 
+function mediaForTask(task: TranscodeTask, index: CurrentMediaIndex) {
+  for (const key of taskMediaKeys(task)) {
+    const item = index.get(key);
+    if (item) return item;
+  }
+  return undefined;
+}
+
+function originalMediaSize(task: TranscodeTask) {
+  if (typeof task.oriSize === "number" && Number.isFinite(task.oriSize)) return task.oriSize;
+  if (typeof task.media?.size === "number" && Number.isFinite(task.media.size)) return task.media.size;
+  return undefined;
+}
+
+function mediaHasNewVersion(item: MediaItem, task: TranscodeTask) {
+  const originalSize = originalMediaSize(task);
+  return typeof originalSize === "number" && item.size !== originalSize;
+}
+
+function taskHasNewVersion(task: TranscodeTask, index: CurrentMediaIndex) {
+  const item = mediaForTask(task, index);
+  return item ? mediaHasNewVersion(item, task) : false;
+}
+
 function canDeleteTask(task: TranscodeTask) {
   return !isInProgressTask(task);
 }
@@ -1998,11 +2050,12 @@ function filterTasks(
   completion: string,
   taskStatusFilters: TriStateFilters,
   codecFilters: TriStateFilters,
-  subtitleFilters: string[]
+  subtitleFilters: string[],
+  currentMediaIndex: CurrentMediaIndex
 ) {
   return tasks.filter((task) => {
     if (!taskMatchesQuery(task, query)) return false;
-    if (!taskMatchesStatusFilters(task, taskStatusFilters)) return false;
+    if (!taskMatchesStatusFilters(task, taskStatusFilters, currentMediaIndex)) return false;
     if (completion === "complete" && task.state !== "complete") return false;
     if (completion === "incomplete" && task.state === "complete") return false;
     const codecs = taskCodecs(task);
@@ -2027,12 +2080,15 @@ function triStateFiltersByState(filters: TriStateFilters, state: TriStateFilterS
     .map(([option]) => option);
 }
 
-function taskMatchesStatusFilters(task: TranscodeTask, filters: TriStateFilters) {
+function taskMatchesStatusFilters(task: TranscodeTask, filters: TriStateFilters, currentMediaIndex: CurrentMediaIndex) {
   const included = triStateFiltersByState(filters, "include");
   const excluded = triStateFiltersByState(filters, "exclude");
   const inProgress = isInProgressTask(task);
+  const newVersion = taskHasNewVersion(task, currentMediaIndex);
   if (included.includes(IN_PROGRESS_FILTER) && !inProgress) return false;
   if (excluded.includes(IN_PROGRESS_FILTER) && inProgress) return false;
+  if (included.includes(NEW_VERSION_FILTER) && !newVersion) return false;
+  if (excluded.includes(NEW_VERSION_FILTER) && newVersion) return false;
   return true;
 }
 
