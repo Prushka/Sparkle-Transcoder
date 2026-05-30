@@ -5,6 +5,8 @@ import {
   BadgeCheck,
   Ban,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   CircleAlert,
   Clapperboard,
   Film,
@@ -88,6 +90,13 @@ type QueuePlan = {
   skippedCompleteItems: MediaItem[];
   incompleteItems: MediaItem[];
   nonExistingItems: MediaItem[];
+};
+
+type DialogMediaGroup = {
+  key: string;
+  label: string;
+  items: MediaItem[];
+  showHeader: boolean;
 };
 
 const initialState: LoadState = {
@@ -1468,6 +1477,9 @@ function TaskDialog({
   const [quality, setQuality] = React.useState(18);
   const [audioKbps, setAudioKbps] = React.useState(144);
   const [queueMode, setQueueMode] = React.useState<QueueMode>("replace");
+  const [mediaFilter, setMediaFilter] = React.useState("");
+  const [selectedMediaIds, setSelectedMediaIds] = React.useState<string[]>([]);
+  const [collapsedMediaGroupKeys, setCollapsedMediaGroupKeys] = React.useState<string[]>([]);
 
   React.useEffect(() => {
     if (!config) return;
@@ -1485,21 +1497,51 @@ function TaskDialog({
   const allEncoders = ["hevc", "av1", "h264-10bit", "h264-8bit"];
   const effectiveQueueMode: QueueMode = selection?.bulk ? queueMode : "replace";
   const queueCreateMode: QueueCreateMode = effectiveQueueMode === "incomplete" ? "incomplete" : "replace";
-  const queuePlan = selection ? buildQueuePlan(selection.items, selection.existingTasks, queueCreateMode) : emptyQueuePlan();
-  const selectedExistingTasks = uniqueTasks(selection?.existingTasks ?? []);
+  const actionItems = React.useMemo(() => (selection ? queueActionItems(selection, effectiveQueueMode) : []), [effectiveQueueMode, selection]);
+  const actionItemIds = React.useMemo(() => actionItems.map((item) => item.id), [actionItems]);
+  const actionItemIdsKey = actionItemIds.join("|");
+
+  React.useEffect(() => {
+    setSelectedMediaIds(actionItemIds);
+    setMediaFilter("");
+    setCollapsedMediaGroupKeys([]);
+  }, [actionItemIdsKey, effectiveQueueMode]);
+
+  const selectedMediaIdSet = React.useMemo(() => new Set(selectedMediaIds), [selectedMediaIds]);
+  const selectedActionItems = React.useMemo(() => actionItems.filter((item) => selectedMediaIdSet.has(item.id)), [actionItems, selectedMediaIdSet]);
+  const actionSelection = React.useMemo(() => {
+    if (!selection) return null;
+    return {
+      ...selection,
+      items: selection.bulk ? selectedActionItems : selection.items,
+      existingTasks: existingTasksForMedia(selection.bulk ? selectedActionItems : selection.items, selection.existingTasks)
+    };
+  }, [selectedActionItems, selection]);
+  const filteredActionItems = React.useMemo(() => filterDialogMediaItems(actionItems, mediaFilter), [actionItems, mediaFilter]);
+  const actionGroups = React.useMemo(() => groupDialogMediaItems(filteredActionItems, selection), [filteredActionItems, selection]);
+  const filteredActionIds = React.useMemo(() => filteredActionItems.map((item) => item.id), [filteredActionItems]);
+  const filteredSelectedCount = filteredActionIds.filter((id) => selectedMediaIdSet.has(id)).length;
+  const queuePlan = actionSelection ? buildQueuePlan(actionSelection.items, actionSelection.existingTasks, queueCreateMode) : emptyQueuePlan();
+  const selectedExistingTasks = uniqueTasks(actionSelection?.existingTasks ?? []);
+  const deleteActionItems = React.useMemo(() => (selection ? queueActionItems(selection, "delete") : []), [selection]);
+  const deleteActionTasks = React.useMemo(() => existingTasksForMedia(deleteActionItems, selection?.existingTasks ?? []), [deleteActionItems, selection?.existingTasks]);
+  const deleteActionRunningTasks = deleteActionTasks.filter((task) => !canDeleteTask(task));
+  const deleteActionTaskCount = deleteActionTasks.length;
   const selectedRunningTasks = selectedExistingTasks.filter((task) => !canDeleteTask(task));
   const selectedExistingTaskCount = selectedExistingTasks.length;
   const existingTaskCount = queuePlan.existingTasks.length;
   const blocksReplacement = queuePlan.runningTasks.length > 0;
   const blocksDelete = selectedRunningTasks.length > 0;
   const queueCount = queuePlan.items.length;
+  const hasActionSelection = !selection?.bulk || selectedActionItems.length > 0;
   const submit = () => {
     if (!selection) return;
     if (effectiveQueueMode === "delete") {
-      onDeleteExisting(selection);
+      if (actionSelection) onDeleteExisting(actionSelection);
       return;
     }
-    onCreate(selection, {
+    if (!actionSelection) return;
+    onCreate(actionSelection, {
       fast,
       enableEncode,
       enableSprites,
@@ -1511,43 +1553,160 @@ function TaskDialog({
     }, queueCreateMode);
   };
   const actionDisabled = effectiveQueueMode === "delete"
-    ? busy || selectedExistingTaskCount === 0 || blocksDelete
-    : busy || blocksReplacement || queueCount === 0 || (!fast && !encoders.length);
+    ? busy || !hasActionSelection || selectedExistingTaskCount === 0 || blocksDelete
+    : busy || !hasActionSelection || blocksReplacement || queueCount === 0 || (!fast && !encoders.length);
 
   return (
     <Dialog open={!!selection} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl">
-        <DialogHeader>
+      <DialogContent className="grid h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] max-w-4xl grid-rows-[auto_minmax(0,1fr)_auto_auto] overflow-hidden sm:h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-2rem)]">
+        <DialogHeader className="min-w-0 pr-8">
           <DialogTitle>{selection?.title ?? "Transcode"}</DialogTitle>
           <DialogDescription>{selection?.description}</DialogDescription>
         </DialogHeader>
-        <div className="grid gap-4">
+        <div className="app-scrollbar grid min-h-0 min-w-0 gap-4 overflow-x-hidden overflow-y-auto pr-1">
           {selection?.bulk ? (
-            <div>
+            <div className="min-w-0">
               <div className="mb-2 text-sm font-medium">Queue mode</div>
               <div className="grid gap-2 sm:grid-cols-3">
                 <Tip content="Delete matching task output and queue every selected episode again">
-                  <Button type="button" variant={queueMode === "replace" ? "default" : "outline"} onClick={() => setQueueMode("replace")}>
+                  <Button type="button" className="min-w-0" variant={queueMode === "replace" ? "default" : "outline"} onClick={() => setQueueMode("replace")}>
                     <Trash2 />
                     Replace
                   </Button>
                 </Tip>
                 <Tip content="Skip media that already has a complete task and queue only missing or incomplete media">
-                  <Button type="button" variant={queueMode === "incomplete" ? "default" : "outline"} onClick={() => setQueueMode("incomplete")}>
+                  <Button type="button" className="min-w-0" variant={queueMode === "incomplete" ? "default" : "outline"} onClick={() => setQueueMode("incomplete")}>
                     <ListVideo />
                     Incomplete or missing
                   </Button>
                 </Tip>
-                <Tip content={selectedRunningTasks.length ? "Cancel in-progress tasks before deleting selected task folders" : "Delete selected media's existing task folders without queueing replacements. Library media files are not touched."}>
+                <Tip content={deleteActionRunningTasks.length ? "Cancel in-progress tasks before deleting selected task folders" : "Delete selected media's existing task folders without queueing replacements. Library media files are not touched."}>
                   <Button
                     type="button"
+                    className="min-w-0"
                     variant={queueMode === "delete" ? "destructive" : "outline"}
                     onClick={() => setQueueMode("delete")}
                   >
                     <Trash2 />
-                    Delete {selectedExistingTaskCount.toLocaleString()}
+                    Delete {deleteActionTaskCount.toLocaleString()}
                   </Button>
                 </Tip>
+              </div>
+            </div>
+          ) : null}
+          {selection?.bulk ? (
+            <div className="min-w-0 rounded-lg border bg-card/60 p-3">
+              <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <ListVideo className="size-4 text-primary" />
+                    <span className="text-sm font-medium">{queueActionLabel(effectiveQueueMode)}</span>
+                    <Badge variant="outline">
+                      {selectedActionItems.length.toLocaleString()} of {actionItems.length.toLocaleString()}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">{queueActionHelp(effectiveQueueMode)}</div>
+                </div>
+                <div className="flex min-w-0 flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelectedMediaIds((current) => uniqueIDs([...current, ...filteredActionIds]))}
+                    disabled={!filteredActionIds.length || filteredSelectedCount === filteredActionIds.length}
+                  >
+                    <BadgeCheck />
+                    Select all filtered
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setSelectedMediaIds([])} disabled={!selectedMediaIds.length}>
+                    <X />
+                    Clear all selected
+                  </Button>
+                </div>
+              </div>
+              <div className="relative mb-3">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input value={mediaFilter} onChange={(event) => setMediaFilter(event.target.value)} className="pl-9" placeholder="Filter selected media" />
+              </div>
+              <div className="app-scrollbar max-h-[46dvh] overflow-x-hidden overflow-y-auto rounded-lg border bg-background/30">
+                {actionGroups.length ? (
+                  actionGroups.map((group) => (
+                    <div key={group.key} className="border-b last:border-b-0">
+                      {(() => {
+                        const groupIds = group.items.map((item) => item.id);
+                        const groupSelectedCount = groupIds.filter((id) => selectedMediaIdSet.has(id)).length;
+                        const groupFullySelected = group.items.length > 0 && groupSelectedCount === group.items.length;
+                        const groupPartiallySelected = groupSelectedCount > 0 && !groupFullySelected;
+                        const groupCollapsed = collapsedMediaGroupKeys.includes(group.key);
+                        const toggleGroupSelection = () => {
+                          setSelectedMediaIds((current) => {
+                            const groupIdSet = new Set(groupIds);
+                            return groupFullySelected ? current.filter((id) => !groupIdSet.has(id)) : uniqueIDs([...current, ...groupIds]);
+                          });
+                        };
+
+                        return group.showHeader ? (
+                          <div className="sticky top-0 z-10 flex min-w-0 items-center justify-between gap-3 border-b bg-background/95 px-3 py-2 backdrop-blur">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="size-7 shrink-0"
+                                aria-label={`${groupCollapsed ? "Expand" : "Collapse"} ${group.label}`}
+                                onClick={() => setCollapsedMediaGroupKeys((current) => toggleID(current, group.key))}
+                              >
+                                {groupCollapsed ? <ChevronRight /> : <ChevronDown />}
+                              </Button>
+                              <input
+                                type="checkbox"
+                                className="size-4 shrink-0 accent-primary"
+                                aria-label={`${groupFullySelected ? "Deselect" : "Select"} ${group.label}`}
+                                checked={groupFullySelected}
+                                ref={(node) => {
+                                  if (node) node.indeterminate = groupPartiallySelected;
+                                }}
+                                onChange={toggleGroupSelection}
+                              />
+                              <div className="min-w-0 truncate text-xs font-medium text-muted-foreground">{group.label}</div>
+                            </div>
+                            <Badge variant={groupSelectedCount ? "secondary" : "outline"}>
+                              {groupSelectedCount.toLocaleString()} / {group.items.length.toLocaleString()}
+                            </Badge>
+                          </div>
+                        ) : null;
+                      })()}
+                      <div className={cn("divide-y", collapsedMediaGroupKeys.includes(group.key) && "hidden")}>
+                        {group.items.map((item) => {
+                          const checked = selectedMediaIdSet.has(item.id);
+                          const taskCount = tasksForReplacementMedia(item, selection.existingTasks).length;
+                          const emptyTaskBadge = effectiveQueueMode === "replace" ? "No task" : "Missing";
+                          return (
+                            <label key={item.id} className="flex min-w-0 cursor-pointer items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/50">
+                              <input
+                                type="checkbox"
+                                className="mt-1 size-4 shrink-0 accent-primary"
+                                checked={checked}
+                                onChange={() => setSelectedMediaIds((current) => toggleID(current, item.id))}
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                  <span className="min-w-0 truncate text-sm font-medium">{dialogMediaTitle(item)}</span>
+                                  {taskCount ? <Badge variant="secondary">{taskCount} {pluralize("task", taskCount)}</Badge> : <Badge variant="outline">{emptyTaskBadge}</Badge>}
+                                </div>
+                                <div className="mt-1 truncate text-xs text-muted-foreground">{item.relPath || item.fileName}</div>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="flex min-h-28 items-center justify-center px-3 text-sm text-muted-foreground">
+                    {mediaFilter.trim() ? "No media matches the filter" : "No media for this action"}
+                  </div>
+                )}
               </div>
             </div>
           ) : null}
@@ -1598,7 +1757,7 @@ function TaskDialog({
                 {queueNoticeIcon(queuePlan, effectiveQueueMode)}
                 {queueNoticeTitle(queuePlan, effectiveQueueMode)}
               </div>
-              <p className="text-muted-foreground">{queueConfirmationText(selection, queuePlan, effectiveQueueMode)}</p>
+              <p className="text-muted-foreground">{queueConfirmationText(actionSelection ?? selection, queuePlan, effectiveQueueMode)}</p>
             </div>
           ) : null}
         </div>
@@ -2118,6 +2277,14 @@ function uniqueTasks(tasks: TranscodeTask[]) {
   return unique;
 }
 
+function uniqueIDs(ids: string[]) {
+  return Array.from(new Set(ids));
+}
+
+function toggleID(ids: string[], id: string) {
+  return ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id];
+}
+
 function emptyQueuePlan(): QueuePlan {
   return {
     items: [],
@@ -2151,6 +2318,20 @@ function buildQueuePlan(items: MediaItem[], tasks: TranscodeTask[], queueMode: Q
   plan.existingTasks = uniqueTasks(plan.existingTasks);
   plan.runningTasks = plan.existingTasks.filter((task) => !canDeleteTask(task));
   return plan;
+}
+
+function queueActionItems(selection: TaskSelection, queueMode: QueueMode) {
+  if (queueMode === "delete") {
+    return mediaItemsWithExistingTasks(selection.items, selection.existingTasks);
+  }
+  if (queueMode === "incomplete") {
+    return buildQueuePlan(selection.items, selection.existingTasks, "incomplete").items;
+  }
+  return uniqueMediaItems(selection.items);
+}
+
+function mediaItemsWithExistingTasks(items: MediaItem[], tasks: TranscodeTask[]) {
+  return uniqueMediaItems(items).filter((item) => tasksForReplacementMedia(item, tasks).length > 0);
 }
 
 function existingTasksForMedia(items: MediaItem[], tasks: TranscodeTask[]) {
@@ -2193,6 +2374,50 @@ function itemsForSeason(items: MediaItem[], seasonNumber: number) {
   return sortMediaItems(items.filter((item) => (item.season || 0) === seasonNumber));
 }
 
+function filterDialogMediaItems(items: MediaItem[], query: string) {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return sortMediaItems(items);
+  return sortMediaItems(items).filter((item) => {
+    const haystack = [
+      item.title,
+      item.show,
+      item.episodeTitle,
+      item.fileName,
+      item.relPath,
+      item.library,
+      item.season ? `season ${item.season}` : "",
+      item.episode ? `episode ${item.episode}` : ""
+    ].filter(Boolean).join(" ").toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
+function groupDialogMediaItems(items: MediaItem[], selection: TaskSelection | null): DialogMediaGroup[] {
+  if (!selection || !shouldGroupDialogBySeason(selection)) {
+    return items.length ? [{ key: "media", label: "Media", items, showHeader: false }] : [];
+  }
+  return Array.from(
+    items.reduce((groups, item) => {
+      const season = item.season || 0;
+      if (!groups.has(season)) groups.set(season, []);
+      groups.get(season)!.push(item);
+      return groups;
+    }, new Map<number, MediaItem[]>())
+  )
+    .sort(([a], [b]) => a - b)
+    .map(([season, seasonItems]) => ({
+      key: `season:${season}`,
+      label: season ? `Season ${season}` : "Specials",
+      items: sortMediaItems(seasonItems),
+      showHeader: true
+    }));
+}
+
+function shouldGroupDialogBySeason(selection: TaskSelection) {
+  if (!selection.bulk || !selection.items.every((item) => item.kind === "episode")) return false;
+  return new Set(selection.items.map((item) => item.season || 0)).size > 1;
+}
+
 function sortMediaItems(items: MediaItem[]) {
   return [...items].sort(
     (a, b) =>
@@ -2216,6 +2441,38 @@ function showSelectionDescription(showName: string, items: MediaItem[]) {
   const seasonCount = new Set(items.map((item) => item.season || 0)).size;
   const seasonLabel = seasonCount === 1 ? "season" : "seasons";
   return `${selectionCountDescription(items.length, "episode")} from ${showName} across ${seasonCount.toLocaleString()} ${seasonLabel}`;
+}
+
+function queueActionLabel(queueMode: QueueMode) {
+  switch (queueMode) {
+    case "delete":
+      return "Task folders to delete";
+    case "incomplete":
+      return "Incomplete or missing media";
+    default:
+      return "Media to replace";
+  }
+}
+
+function queueActionHelp(queueMode: QueueMode) {
+  switch (queueMode) {
+    case "delete":
+      return "Only media with existing task output is listed.";
+    case "incomplete":
+      return "Complete media is skipped before selection.";
+    default:
+      return "Selected media will be queued after matching task output is removed.";
+  }
+}
+
+function dialogMediaTitle(item: MediaItem) {
+  if (item.kind === "episode") {
+    const season = item.season ? `S${String(item.season).padStart(2, "0")}` : "";
+    const episode = item.episode ? `E${String(item.episode).padStart(2, "0")}` : "";
+    const prefix = `${season}${episode}`;
+    return [prefix, item.episodeTitle || item.title || item.fileName].filter(Boolean).join(" / ");
+  }
+  return item.title || item.fileName;
 }
 
 function queueNoticeIcon(plan: QueuePlan, queueMode: QueueMode) {
