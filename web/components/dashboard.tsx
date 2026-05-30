@@ -71,6 +71,7 @@ type TriStateFilterState = "include" | "exclude";
 type TriStateFilters = Record<string, TriStateFilterState>;
 
 const IN_PROGRESS_FILTER = "In Progress";
+const LIVE_TASK_POLL_INTERVAL_MS = 30000;
 
 type TaskSelection = {
   title: string;
@@ -248,7 +249,7 @@ export function Dashboard() {
     if (!hasLiveTasks) return;
     const interval = window.setInterval(() => {
       void loadTaskList();
-    }, 3000);
+    }, LIVE_TASK_POLL_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, [hasLiveTasks, loadTaskList]);
 
