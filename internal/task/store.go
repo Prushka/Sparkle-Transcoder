@@ -577,12 +577,16 @@ func (s *Store) recordRunnerTask(task *Task) {
 	}
 	s.upsertCache(task)
 	active := cacheTask(*task)
-	active.Running = true
 	s.mu.Lock()
 	if s.active == nil {
 		s.active = map[string]Task{}
 	}
-	s.active[active.ID] = active
+	if isActiveRunnerState(active.State) {
+		active.Running = true
+		s.active[active.ID] = active
+	} else {
+		delete(s.active, active.ID)
+	}
 	s.mu.Unlock()
 }
 
@@ -591,6 +595,9 @@ func (s *Store) activeTasks() []Task {
 	defer s.mu.Unlock()
 	tasks := make([]Task, 0, len(s.active))
 	for _, task := range s.active {
+		if !isActiveRunnerState(task.State) {
+			continue
+		}
 		task.Running = true
 		tasks = append(tasks, cloneTask(task))
 	}
@@ -1024,6 +1031,15 @@ func resetTaskForQueue(task *Task, inputPath string, outputDir string, now time.
 func isRecoverableState(state string) bool {
 	switch state {
 	case StateQueued, StateRunning, StateIncomplete, StateStreamsExtracted:
+		return true
+	default:
+		return false
+	}
+}
+
+func isActiveRunnerState(state string) bool {
+	switch state {
+	case StateRunning, StateIncomplete, StateStreamsExtracted:
 		return true
 	default:
 		return false

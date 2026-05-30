@@ -36,6 +36,7 @@ import {
   type PublicConfig,
   type ScanStatus,
   type TaskParams,
+  type TaskListResponse,
   type TaskStatus,
   type ToolReadiness,
   type TranscodeTask
@@ -159,8 +160,7 @@ export function Dashboard() {
       setState((current) => ({
         ...current,
         media: mediaResponse.items,
-        tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
-        taskStatus: taskResponse.status,
+        ...mergeTaskResponse(taskResponse, current.tasks),
         scan: mediaResponse.status
       }));
       setError("");
@@ -174,8 +174,7 @@ export function Dashboard() {
       const [taskResponse, scan] = await Promise.all([api.tasks(), api.scanStatus()]);
       setState((current) => ({
         ...current,
-        tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
-        taskStatus: taskResponse.status,
+        ...mergeTaskResponse(taskResponse, current.tasks),
         scan
       }));
       setError("");
@@ -191,8 +190,7 @@ export function Dashboard() {
       const taskResponse = await api.tasks();
       setState((current) => ({
         ...current,
-        tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
-        taskStatus: taskResponse.status
+        ...mergeTaskResponse(taskResponse, current.tasks)
       }));
       setError("");
     } catch (err) {
@@ -210,8 +208,7 @@ export function Dashboard() {
       const taskResponse = await api.refreshTasks();
       setState((current) => ({
         ...current,
-        tasks: mergeTaskDetails(taskResponse.tasks, current.tasks),
-        taskStatus: taskResponse.status
+        ...mergeTaskResponse(taskResponse, current.tasks)
       }));
       setError("");
     } catch (err) {
@@ -2004,6 +2001,15 @@ function scanDetail(scan?: ScanStatus) {
   return formatDate(scan.lastFinishedAt);
 }
 
+function mergeTaskResponse(response: TaskListResponse, current: TranscodeTask[]) {
+  const taskStatus = normalizeTaskStatus(response.status);
+  let tasks = mergeTaskDetails(response.tasks, current);
+  for (const activeTask of taskStatus.activeTasks ?? []) {
+    tasks = upsertTask(tasks, activeTask);
+  }
+  return { tasks, taskStatus };
+}
+
 function mergeTaskDetails(next: TranscodeTask[], current: TranscodeTask[]) {
   const detailed = new Map(current.filter((task) => task.files || task.streams).map((task) => [task.id, task]));
   return next.map((task) => {
@@ -2044,6 +2050,13 @@ function normalizeTaskUpdate(task: TranscodeTask): TranscodeTask {
     width: task.width,
     height: task.height,
     files: task.files
+  };
+}
+
+function normalizeTaskStatus(status: TaskStatus): TaskStatus {
+  return {
+    ...status,
+    activeTasks: status.activeTasks?.map(normalizeTaskUpdate)
   };
 }
 

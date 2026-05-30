@@ -393,6 +393,42 @@ func TestRecordRunnerTaskUpdatesCacheAndStatus(t *testing.T) {
 	}
 }
 
+func TestRecordRunnerTaskRemovesTerminalActiveTask(t *testing.T) {
+	output := t.TempDir()
+	now := time.Now().UTC()
+	active := Task{
+		ID:        "abc12",
+		Input:     "movie.mkv",
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateStreamsExtracted,
+		Params:    Params{},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	store := &Store{
+		cfg:    &config.Config{Output: output},
+		active: map[string]Task{active.ID: active},
+		cache:  []Task{cacheTask(active)},
+	}
+	complete := active
+	complete.State = StateComplete
+	complete.Running = false
+	complete.UpdatedAt = now.Add(time.Second)
+	store.recordRunnerTask(&complete)
+
+	status := store.Status()
+	if len(status.ActiveTasks) != 0 {
+		t.Fatalf("active tasks = %+v, want none after terminal runner update", status.ActiveTasks)
+	}
+	tasks, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].State != StateComplete || tasks[0].Running {
+		t.Fatalf("tasks = %+v, want complete non-running task", tasks)
+	}
+}
+
 func TestRecoverActiveRequeuesPersistedActiveTasks(t *testing.T) {
 	root := t.TempDir()
 	output := t.TempDir()
