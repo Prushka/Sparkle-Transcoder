@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -515,6 +516,115 @@ func TestRecoverActiveRequeuesPersistedActiveTasks(t *testing.T) {
 	}
 }
 
+func TestShutdownCancellationLeavesRunningTaskRecoverable(t *testing.T) {
+	root := t.TempDir()
+	output := t.TempDir()
+	input := filepath.Join(root, "Movies", "Example", "Example.mkv")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	enableEncode := true
+	enableSprites := false
+	extractStreams := false
+	now := time.Now().UTC()
+	task := &Task{
+		ID:        "abc12",
+		InputPath: input,
+		Input:     filepath.Base(input),
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateQueued,
+		Params: Params{
+			Fast:           true,
+			EnableEncode:   &enableEncode,
+			EnableSprites:  &enableSprites,
+			ExtractStreams: &extractStreams,
+			VideoExt:       "mp4",
+			AudioKbps:      144,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := writeTask(task); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, stop := context.WithCancel(context.Background())
+	exec := &blockingExec{started: make(chan struct{})}
+	cfg := &config.Config{MediaRoot: root, Output: output, Ffmpeg: "ffmpeg"}
+	runner := NewRunner(cfg, nil, exec)
+	store := &Store{
+		cfg:     cfg,
+		runner:  runner,
+		ctx:     ctx,
+		stop:    stop,
+		queue:   make(chan string, 1),
+		cancels: map[string]context.CancelFunc{},
+		active:  map[string]Task{},
+	}
+	runner.SetUpdateHook(store.recordRunnerTask)
+
+	done := make(chan struct{})
+	go func() {
+		store.runQueued(task.ID)
+		close(done)
+	}()
+
+	select {
+	case <-exec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not start blocking transcode")
+	}
+	stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("running task did not stop after store shutdown")
+	}
+
+	interrupted, err := decodeTask(mustReadFile(t, filepath.Join(output, task.ID, JobFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if interrupted.State == StateCanceled || interrupted.FinishedAt != nil || interrupted.Error == "canceled" {
+		t.Fatalf("shutdown persisted task as canceled: %+v", interrupted)
+	}
+	if !isRecoverableState(interrupted.State) {
+		t.Fatalf("shutdown persisted unrecoverable state %s", interrupted.State)
+	}
+
+	restartStore := &Store{
+		cfg:     cfg,
+		queue:   make(chan string, 1),
+		cancels: map[string]context.CancelFunc{},
+	}
+	recovered, err := restartStore.RecoverActive(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+	select {
+	case id := <-restartStore.queue:
+		if id != task.ID {
+			t.Fatalf("queued id = %s, want %s", id, task.ID)
+		}
+	default:
+		t.Fatal("interrupted task was not requeued")
+	}
+	recoveredTask, err := decodeTask(mustReadFile(t, filepath.Join(output, task.ID, JobFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredTask.State != StateQueued || recoveredTask.Running || recoveredTask.Error != "" || recoveredTask.StartedAt != nil || recoveredTask.FinishedAt != nil {
+		t.Fatalf("recovered task = %+v, want clean queued task", recoveredTask)
+	}
+}
+
 func TestRefreshKeepsActiveRunnerTaskAfterStaleScan(t *testing.T) {
 	output := t.TempDir()
 	now := time.Now().UTC()
@@ -859,6 +969,21 @@ func (cancelStreamProbeExec) Run(ctx context.Context, name string, args ...strin
 		}
 	}
 	return []byte(`{"chapters":[],"streams":[]}`), nil
+}
+
+type blockingExec struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+var _ executil.Runner = (*blockingExec)(nil)
+
+func (e *blockingExec) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	e.once.Do(func() {
+		close(e.started)
+	})
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func testItem(path string) media.Item {

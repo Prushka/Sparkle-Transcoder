@@ -536,6 +536,11 @@ func (s *Store) runQueued(id string) {
 	err := s.runner.Run(ctx, task)
 	cancel()
 	if err != nil {
+		if errors.Is(err, context.Canceled) && s.context().Err() != nil {
+			// Shutdown interruptions stay recoverable for the next startup.
+			s.releaseRunning(id)
+			return
+		}
 		_ = s.runner.fail(task, err)
 		s.upsertCache(task)
 		s.releaseRunning(id)
