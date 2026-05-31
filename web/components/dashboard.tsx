@@ -84,6 +84,7 @@ type TaskReplacePlan = {
 };
 type QueueCreateMode = "replace" | "incomplete";
 type QueueMode = QueueCreateMode | "delete";
+type LibrarySort = "title" | "recent";
 type TriStateFilterState = "include" | "exclude";
 type TriStateFilters = Record<string, TriStateFilterState>;
 
@@ -126,6 +127,7 @@ export function Dashboard() {
   const [query, setQuery] = React.useState("");
   const [kind, setKind] = React.useState("all");
   const [library, setLibrary] = React.useState("all");
+  const [librarySort, setLibrarySort] = React.useState<LibrarySort>("title");
   const [selected, setSelected] = React.useState<TaskSelection | null>(null);
   const [activeTab, setActiveTab] = React.useState("library");
   const [busy, setBusy] = React.useState(false);
@@ -295,7 +297,8 @@ export function Dashboard() {
     if (!q) return queueScope;
     return queueScope.filter((item) => `${item.title} ${item.show ?? ""} ${item.fileName} ${item.library}`.toLowerCase().includes(q));
   }, [query, queueScope]);
-  const visibleMedia = React.useMemo(() => filtered.slice(0, mediaLimit), [filtered, mediaLimit]);
+  const sortedMedia = React.useMemo(() => sortLibraryItems(filtered, librarySort), [filtered, librarySort]);
+  const visibleMedia = React.useMemo(() => sortedMedia.slice(0, mediaLimit), [mediaLimit, sortedMedia]);
   const mediaTaskIndex = React.useMemo(() => buildMediaTaskIndex(state.tasks), [state.tasks]);
   const currentMediaIndex = React.useMemo(() => buildCurrentMediaIndex(state.media), [state.media]);
   const taskCodecOptions = React.useMemo(() => taskOptions(state.tasks, taskCodecs), [state.tasks]);
@@ -313,7 +316,7 @@ export function Dashboard() {
 
   React.useEffect(() => {
     setMediaLimit(150);
-  }, [kind, library, query]);
+  }, [kind, library, librarySort, query]);
 
   React.useEffect(() => {
     setTaskLimit(100);
@@ -627,8 +630,10 @@ export function Dashboard() {
                 library={library}
                 setLibrary={setLibrary}
                 libraries={libraries}
+                sort={librarySort}
+                setSort={setLibrarySort}
               />
-              <LibraryView items={visibleMedia} queueItems={queueScope} taskIndex={mediaTaskIndex} busy={busy} onTranscode={openTaskDialog} onDeleteTask={deleteTask} />
+              <LibraryView items={visibleMedia} queueItems={queueScope} sort={librarySort} taskIndex={mediaTaskIndex} busy={busy} onTranscode={openTaskDialog} onDeleteTask={deleteTask} />
               {filtered.length > visibleMedia.length ? (
                 <div className="mt-5 flex justify-center">
                   <Tip content="Render the next batch of matching media">
@@ -713,7 +718,9 @@ function LibraryToolbar({
   setKind,
   library,
   setLibrary,
-  libraries
+  libraries,
+  sort,
+  setSort
 }: {
   query: string;
   setQuery: (value: string) => void;
@@ -722,9 +729,11 @@ function LibraryToolbar({
   library: string;
   setLibrary: (value: string) => void;
   libraries: string[];
+  sort: LibrarySort;
+  setSort: (value: LibrarySort) => void;
 }) {
   return (
-    <div className="mb-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_180px_220px]">
+    <div className="mb-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_180px_220px_200px]">
       <div className="relative">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input value={query} onChange={(event) => setQuery(event.target.value)} className="pl-9" placeholder="Search title, show, file, library" />
@@ -757,6 +766,19 @@ function LibraryToolbar({
                   {value}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </Tip>
+      <Tip content="Sort library results">
+        <div>
+          <Select value={sort} onValueChange={(value) => setSort(asLibrarySort(value))}>
+            <SelectTrigger>
+              <span>{librarySortLabel(sort)}</span>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="title">Title</SelectItem>
+              <SelectItem value="recent">Recently added</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -1043,6 +1065,7 @@ function TriStateFilterGroup({
 function LibraryView({
   items,
   queueItems,
+  sort,
   taskIndex,
   busy,
   onTranscode,
@@ -1050,13 +1073,14 @@ function LibraryView({
 }: {
   items: MediaItem[];
   queueItems: MediaItem[];
+  sort: LibrarySort;
   taskIndex: MediaTaskIndex;
   busy: boolean;
   onTranscode: (items: MediaItem[], title?: string, description?: string, bulk?: boolean) => void;
   onDeleteTask: (id: string) => void;
 }) {
   const movies = items.filter((item) => item.kind === "movie");
-  const shows = groupEpisodes(items.filter((item) => item.kind === "episode"));
+  const shows = groupEpisodes(items.filter((item) => item.kind === "episode"), sort);
   const unknown = items.filter((item) => item.kind === "unknown");
   const queueEpisodes = queueItems.filter((item) => item.kind === "episode");
 
@@ -2615,6 +2639,48 @@ function tasksForReplacementMedia(item: MediaItem, tasks: TranscodeTask[]) {
   return uniqueTasks(tasks.filter((task) => replacementTaskKeys(task).some((key) => selectedKeys.has(key))));
 }
 
+function asLibrarySort(value: string): LibrarySort {
+  return value === "recent" ? "recent" : "title";
+}
+
+function librarySortLabel(sort: LibrarySort) {
+  switch (sort) {
+    case "recent":
+      return "Recently added";
+    default:
+      return "Title";
+  }
+}
+
+function sortLibraryItems(items: MediaItem[], sort: LibrarySort) {
+  const next = [...items];
+  if (sort === "recent") {
+    return next.sort(compareMediaRecentlyAdded);
+  }
+  return next.sort(compareMediaTitle);
+}
+
+function compareMediaTitle(a: MediaItem, b: MediaItem) {
+  return a.sortKey.localeCompare(b.sortKey) || a.fileName.localeCompare(b.fileName);
+}
+
+function compareMediaRecentlyAdded(a: MediaItem, b: MediaItem) {
+  return mediaModTime(b) - mediaModTime(a) || compareMediaTitle(a, b);
+}
+
+function mediaModTime(item: MediaItem) {
+  const value = Date.parse(item.modTime);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function newestMediaModTime(items: MediaItem[]) {
+  return items.reduce((newest, item) => Math.max(newest, mediaModTime(item)), 0);
+}
+
+function newestSeasonModTime(seasons: Map<number, MediaItem[]>) {
+  return Array.from(seasons.values()).reduce((newest, items) => Math.max(newest, newestMediaModTime(items)), 0);
+}
+
 function isCompleteTask(task: TranscodeTask) {
   return task.state === "complete";
 }
@@ -2814,7 +2880,7 @@ function selectionMediaLabel(items: MediaItem[], count = items.length) {
   return count === 1 ? "media file" : "media files";
 }
 
-function groupEpisodes(items: MediaItem[]) {
+function groupEpisodes(items: MediaItem[], sort: LibrarySort = "title") {
   const shows = new Map<string, Map<number, MediaItem[]>>();
   for (const item of items) {
     const show = episodeShowName(item);
@@ -2825,14 +2891,24 @@ function groupEpisodes(items: MediaItem[]) {
     seasons.get(season)!.push(item);
   }
   return Array.from(shows.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([aName, aSeasons], [bName, bSeasons]) =>
+      sort === "recent"
+        ? newestSeasonModTime(bSeasons) - newestSeasonModTime(aSeasons) || aName.localeCompare(bName)
+        : aName.localeCompare(bName)
+    )
     .map(([name, seasons]) => ({
       name,
       seasons: Array.from(seasons.entries())
-        .sort(([a], [b]) => a - b)
+        .sort(([aNumber, aItems], [bNumber, bItems]) =>
+          sort === "recent"
+            ? newestMediaModTime(bItems) - newestMediaModTime(aItems) || aNumber - bNumber
+            : aNumber - bNumber
+        )
         .map(([number, seasonItems]) => ({
           number,
-          items: seasonItems.sort((a, b) => (a.episode || 0) - (b.episode || 0) || a.fileName.localeCompare(b.fileName))
+          items: sort === "recent"
+            ? [...seasonItems].sort(compareMediaRecentlyAdded)
+            : sortMediaItems(seasonItems)
         }))
     }));
 }
