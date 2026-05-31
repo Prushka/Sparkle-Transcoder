@@ -3,6 +3,8 @@
 .sparkle-transcoder/
 launch-backend.ps1
 launch-frontend.ps1
+start-backend.sh
+start-frontend.sh
 bin/
 tmp/
 
