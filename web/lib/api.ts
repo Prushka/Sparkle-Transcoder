@@ -1,5 +1,13 @@
-export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:1323/api").replace(/\/$/, "");
-export const STATIC_BASE = API_BASE.replace(/\/api$/, "");
+const API_BASE = "/api";
+const STATIC_BASE = "";
+
+export function apiBase() {
+  return API_BASE;
+}
+
+export function staticBase() {
+  return STATIC_BASE;
+}
 
 export type RelatedFile = {
   kind: string;
@@ -164,9 +172,9 @@ export const api = {
 };
 
 export function posterUrl(item: MediaItem) {
-  return item.poster ? `${API_BASE}/media/${item.id}/poster` : "";
+  return item.poster ? `${apiBase()}/media/${item.id}/poster` : "";
 }
 
 export function outputUrl(task: TranscodeTask, file: string) {
-  return `${STATIC_BASE}/output/${encodeURIComponent(task.id)}/${encodeURIComponent(file)}`;
+  return `${staticBase()}/output/${encodeURIComponent(task.id)}/${encodeURIComponent(file)}`;
 }
