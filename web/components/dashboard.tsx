@@ -1293,7 +1293,6 @@ function MediaBadges({ item }: { item: MediaItem }) {
           </Badge>
         </Tip>
       ) : null}
-      {item.poster ? <Badge variant="default">Poster</Badge> : null}
     </div>
   );
 }
