@@ -9,11 +9,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path $PSScriptRoot).Path
+$AppName = "Sparkle"
 $TrayScript = Join-Path $RepoRoot "launch-backend-tray.ps1"
 $IconPath = Join-Path $RepoRoot "assets\sparkle-transcoder.ico"
 $PowerShellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 
-$ShortcutName = "Sparkle Transcoder Backend.lnk"
+$ShortcutName = "$AppName.lnk"
+$LegacyShortcutNames = @("Sparkle Transcoder Backend.lnk")
 $StartupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
 $StartMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 $StartupShortcut = Join-Path $StartupDir $ShortcutName
@@ -25,6 +27,13 @@ function Remove-ShortcutIfPresent {
     if (Test-Path $Path) {
         Remove-Item -LiteralPath $Path -Force
         Write-Host "Removed $Path"
+    }
+}
+
+function Remove-LegacyShortcuts {
+    foreach ($name in $LegacyShortcutNames) {
+        Remove-ShortcutIfPresent -Path (Join-Path $StartupDir $name)
+        Remove-ShortcutIfPresent -Path (Join-Path $StartMenuDir $name)
     }
 }
 
@@ -50,7 +59,7 @@ function New-BackendShortcut {
     $shortcut.TargetPath = $PowerShellExe
     $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$TrayScript`""
     $shortcut.WorkingDirectory = $RepoRoot
-    $shortcut.Description = "Start and manage the Sparkle Transcoder backend tray controller."
+    $shortcut.Description = "Start and manage Sparkle."
     $shortcut.IconLocation = "$IconPath,0"
     $shortcut.Save()
 
@@ -60,8 +69,11 @@ function New-BackendShortcut {
 if ($Remove) {
     Remove-ShortcutIfPresent -Path $StartupShortcut
     Remove-ShortcutIfPresent -Path $StartMenuShortcut
+    Remove-LegacyShortcuts
     return
 }
+
+Remove-LegacyShortcuts
 
 if (-not $NoStartup) {
     New-BackendShortcut -Path $StartupShortcut
@@ -73,4 +85,4 @@ if (-not $NoStartMenu) {
 
 Write-Host ""
 Write-Host "Startup shortcut installed. The tray controller will launch when you sign in."
-Write-Host "For a taskbar launcher, open Start, search 'Sparkle Transcoder Backend', right-click it, and choose 'Pin to taskbar'."
+Write-Host "For a taskbar launcher, open Start, search '$AppName', right-click it, and choose 'Pin to taskbar'."

@@ -11,8 +11,8 @@ $CreatedNew = $false
 $Mutex = [System.Threading.Mutex]::new($true, "Local\SparkleTranscoderBackendTray", [ref]$CreatedNew)
 if (-not $CreatedNew) {
     [System.Windows.Forms.MessageBox]::Show(
-        "Sparkle Transcoder backend tray is already running.",
-        "Sparkle Transcoder",
+        "Sparkle is already running.",
+        "Sparkle",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Information
     ) | Out-Null
@@ -20,6 +20,7 @@ if (-not $CreatedNew) {
 }
 
 $script:RepoRoot = (Resolve-Path $PSScriptRoot).Path
+$script:AppName = "Sparkle"
 $script:BackendScript = Join-Path $script:RepoRoot "launch-backend.ps1"
 $script:AppIconPath = Join-Path $script:RepoRoot "assets\sparkle-transcoder.ico"
 $script:LogDir = Join-Path $script:RepoRoot ".sparkle-transcoder\logs"
@@ -90,11 +91,11 @@ function Update-TrayState {
 
     if ($running) {
         $script:StatusItem.Text = "Status: Running (PID $($process.Id))"
-        $script:NotifyIcon.Text = "Sparkle Backend: Running"
+        $script:NotifyIcon.Text = "$($script:AppName): Running"
     }
     else {
         $script:StatusItem.Text = "Status: Stopped"
-        $script:NotifyIcon.Text = "Sparkle Backend: Stopped"
+        $script:NotifyIcon.Text = "$($script:AppName): Stopped"
     }
 
     $script:NotifyIcon.Icon = Get-AppIcon
@@ -124,12 +125,12 @@ function Start-Backend {
     }
 
     if (-not (Test-Path $script:BackendScript)) {
-        Show-TrayBalloon "Sparkle Transcoder" "Cannot find launch-backend.ps1." ([System.Windows.Forms.ToolTipIcon]::Error)
+        Show-TrayBalloon $script:AppName "Cannot find launch-backend.ps1." ([System.Windows.Forms.ToolTipIcon]::Error)
         return
     }
 
     if (-not (Test-Path $script:PowerShellExe)) {
-        Show-TrayBalloon "Sparkle Transcoder" "Cannot find Windows PowerShell." ([System.Windows.Forms.ToolTipIcon]::Error)
+        Show-TrayBalloon $script:AppName "Cannot find Windows PowerShell." ([System.Windows.Forms.ToolTipIcon]::Error)
         return
     }
 
@@ -152,12 +153,12 @@ function Start-Backend {
             -PassThru
 
         Update-TrayState
-        Show-TrayBalloon "Sparkle Transcoder" "Backend started." ([System.Windows.Forms.ToolTipIcon]::Info)
+        Show-TrayBalloon $script:AppName "Started." ([System.Windows.Forms.ToolTipIcon]::Info)
     }
     catch {
         $script:BackendProcess = $null
         Update-TrayState
-        Show-TrayBalloon "Sparkle Transcoder" "Backend failed to start. See the log folder." ([System.Windows.Forms.ToolTipIcon]::Error)
+        Show-TrayBalloon $script:AppName "Failed to start. See the log folder." ([System.Windows.Forms.ToolTipIcon]::Error)
     }
 }
 
@@ -171,7 +172,7 @@ function Stop-Backend {
     Stop-ProcessTree -ProcessId $process.Id
     $script:BackendProcess = $null
     Update-TrayState
-    Show-TrayBalloon "Sparkle Transcoder" "Backend stopped." ([System.Windows.Forms.ToolTipIcon]::Info)
+    Show-TrayBalloon $script:AppName "Stopped." ([System.Windows.Forms.ToolTipIcon]::Info)
 }
 
 function Restart-Backend {
@@ -190,7 +191,7 @@ try {
 
     $script:NotifyIcon = [System.Windows.Forms.NotifyIcon]::new()
     $script:NotifyIcon.Icon = Get-AppIcon
-    $script:NotifyIcon.Text = "Sparkle Backend"
+    $script:NotifyIcon.Text = $script:AppName
     $script:NotifyIcon.Visible = $true
 
     $menu = [System.Windows.Forms.ContextMenuStrip]::new()
@@ -200,15 +201,15 @@ try {
     [void]$menu.Items.Add($script:StatusItem)
     [void]$menu.Items.Add([System.Windows.Forms.ToolStripSeparator]::new())
 
-    $script:StartItem = [System.Windows.Forms.ToolStripMenuItem]::new("Start Backend")
+    $script:StartItem = [System.Windows.Forms.ToolStripMenuItem]::new("Start Sparkle")
     $script:StartItem.Add_Click({ Start-Backend })
     [void]$menu.Items.Add($script:StartItem)
 
-    $script:StopItem = [System.Windows.Forms.ToolStripMenuItem]::new("Stop Backend")
+    $script:StopItem = [System.Windows.Forms.ToolStripMenuItem]::new("Stop Sparkle")
     $script:StopItem.Add_Click({ Stop-Backend })
     [void]$menu.Items.Add($script:StopItem)
 
-    $script:RestartItem = [System.Windows.Forms.ToolStripMenuItem]::new("Restart Backend")
+    $script:RestartItem = [System.Windows.Forms.ToolStripMenuItem]::new("Restart Sparkle")
     $script:RestartItem.Add_Click({ Restart-Backend })
     [void]$menu.Items.Add($script:RestartItem)
 

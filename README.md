@@ -19,13 +19,13 @@ To run the backend automatically when you sign in and manage it from the Windows
 This creates:
 
 - A Startup shortcut that runs `launch-backend-tray.ps1` on login.
-- A Start Menu shortcut named `Sparkle Transcoder Backend` using the project icon from `assets/sparkle-transcoder.ico`.
+- A Start Menu shortcut named `Sparkle` using the project icon from `assets/sparkle-transcoder.ico`.
 
-To pin a launch icon to the taskbar, open Start, search for `Sparkle Transcoder Backend`, right-click it, and choose `Pin to taskbar`.
+To pin a launch icon to the taskbar, open Start, search for `Sparkle`, right-click it, and choose `Pin to taskbar`.
 
-The tray menu supports `Start Backend`, `Stop Backend`, `Restart Backend`, `Open Logs`, and `Quit`. Logs are written under `.sparkle-transcoder/logs`.
+The tray menu supports `Start Sparkle`, `Stop Sparkle`, `Restart Sparkle`, `Open Logs`, and `Quit`. Logs are written under `.sparkle-transcoder/logs`.
 
-Run `./install-backend-startup.ps1` again to refresh existing shortcuts after the icon or launcher changes. If the taskbar keeps an old icon, unpin and re-pin `Sparkle Transcoder Backend` from Start.
+Run `./install-backend-startup.ps1` again to refresh existing shortcuts after the icon or launcher changes. If the taskbar keeps an old name or icon, unpin and re-pin `Sparkle` from Start.
 
 To remove the Startup and Start Menu shortcuts:
 
