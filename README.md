@@ -8,6 +8,29 @@ Standalone media scanner and transcoding task manager extracted from `Sparkle-BE
 ./launch-backend.ps1
 ```
 
+### Windows startup and tray launcher
+
+To run the backend automatically when you sign in and manage it from the Windows tray:
+
+```powershell
+./install-backend-startup.ps1
+```
+
+This creates:
+
+- A Startup shortcut that runs `launch-backend-tray.ps1` on login.
+- A Start Menu shortcut named `Sparkle Transcoder Backend`.
+
+To pin a launch icon to the taskbar, open Start, search for `Sparkle Transcoder Backend`, right-click it, and choose `Pin to taskbar`.
+
+The tray menu supports `Start Backend`, `Stop Backend`, `Restart Backend`, `Open Logs`, and `Quit`. Logs are written under `.sparkle-transcoder/logs`.
+
+To remove the Startup and Start Menu shortcuts:
+
+```powershell
+./install-backend-startup.ps1 -Remove
+```
+
 Default paths:
 
 - `MEDIA_ROOT=O:\Managed-Videos`
