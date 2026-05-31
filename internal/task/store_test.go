@@ -357,6 +357,49 @@ func TestRunnerPropagatesCanceledOptionalExtraction(t *testing.T) {
 	}
 }
 
+func TestRunnerExtractsDVDSubtitleWithMKVExtract(t *testing.T) {
+	output := t.TempDir()
+	input := filepath.Join(t.TempDir(), "Movies", "Example", "Example.mkv")
+	task := &Task{
+		ID:        "abc12",
+		InputPath: input,
+		Input:     filepath.Base(input),
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateQueued,
+		Params:    Params{},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	exec := &dvdSubtitleExec{}
+	runner := NewRunner(&config.Config{Output: output, Ffprobe: "ffprobe", Ffmpeg: "ffmpeg", MKVExtract: "mkvextract"}, nil, exec)
+
+	if err := runner.extractStreams(context.Background(), task, input, subtitleType); err != nil {
+		t.Fatal(err)
+	}
+
+	wantLocation := "3-eng.sub"
+	if len(task.Streams) != 1 || task.Streams[0].Location != wantLocation {
+		t.Fatalf("streams = %+v, want one subtitle at %s", task.Streams, wantLocation)
+	}
+	wantOutput := filepath.Join(output, "abc12", wantLocation)
+	wantTrackArg := "3:" + wantOutput
+	foundMKVExtract := false
+	for _, call := range exec.calls {
+		if call.name == "ffmpeg" {
+			t.Fatalf("dvd subtitle extraction used ffmpeg: %+v", call.args)
+		}
+		if call.name == "mkvextract" {
+			foundMKVExtract = true
+			if len(call.args) != 3 || call.args[0] != "tracks" || call.args[1] != input || call.args[2] != wantTrackArg {
+				t.Fatalf("mkvextract args = %+v, want [tracks %s %s]", call.args, input, wantTrackArg)
+			}
+		}
+	}
+	if !foundMKVExtract {
+		t.Fatalf("calls = %+v, missing mkvextract", exec.calls)
+	}
+}
+
 func TestRecordRunnerTaskUpdatesCacheAndStatus(t *testing.T) {
 	output := t.TempDir()
 	now := time.Now().UTC()
@@ -969,6 +1012,25 @@ func (cancelStreamProbeExec) Run(ctx context.Context, name string, args ...strin
 		}
 	}
 	return []byte(`{"chapters":[],"streams":[]}`), nil
+}
+
+type recordedCall struct {
+	name string
+	args []string
+}
+
+type dvdSubtitleExec struct {
+	calls []recordedCall
+}
+
+var _ executil.Runner = (*dvdSubtitleExec)(nil)
+
+func (e *dvdSubtitleExec) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	e.calls = append(e.calls, recordedCall{name: name, args: append([]string(nil), args...)})
+	if name == "ffprobe" {
+		return []byte(`{"chapters":[],"streams":[{"index":3,"codec_type":"subtitle","codec_name":"dvd_subtitle","tags":{"language":"eng"}}]}`), nil
+	}
+	return []byte{}, nil
 }
 
 type blockingExec struct {

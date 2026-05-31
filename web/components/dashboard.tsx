@@ -774,12 +774,12 @@ function ToolReadinessSection({ tools }: { tools: ToolReadiness[] }) {
           <Wrench className="size-4 text-primary" />
           <h2 className="text-sm font-semibold tracking-normal">Backend tools</h2>
           <Badge variant={readyCount === tools.length && tools.length ? "default" : "warning"}>
-            {readyCount}/{tools.length || 3} ready
+            {readyCount}/{tools.length || 4} ready
           </Badge>
         </div>
       </div>
-      <div className="grid gap-3 md:grid-cols-3">
-        {(tools.length ? tools : ["ffmpeg", "ffprobe", "handbrake"]).map((tool) => {
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {(tools.length ? tools : ["ffmpeg", "ffprobe", "mkvextract", "handbrake"]).map((tool) => {
           const pending = typeof tool === "string";
           const item = pending
             ? ({ id: tool, name: tool, command: tool, ready: false, required: true } satisfies ToolReadiness)

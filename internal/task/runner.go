@@ -38,7 +38,6 @@ const (
 
 var imageSubtitleExt = map[string]string{
 	"hdmv_pgs_subtitle": "sup",
-	"dvd_subtitle":      "sub",
 }
 
 type Runner struct {
@@ -253,6 +252,16 @@ func (r *Runner) extractOneStream(ctx context.Context, task *Task, source string
 	}
 	switch stream.CodecType {
 	case subtitleType:
+		if stream.CodecName == "dvd_subtitle" {
+			// FFmpeg's .sub muxer is MicroDVD text; mkvextract preserves VobSub sidecars.
+			filename := fmt.Sprintf("%s.sub", id)
+			if _, err := r.exec.Run(ctx, firstNonEmpty(r.cfg.MKVExtract, "mkvextract"), "tracks", source, fmt.Sprintf("%d:%s", stream.Index, r.outputJoin(task, filename))); err != nil {
+				return err
+			}
+			baseStream.Location = filename
+			task.Streams = append(task.Streams, baseStream)
+			return nil
+		}
 		if ext, ok := imageSubtitleExt[stream.CodecName]; ok {
 			filename := fmt.Sprintf("%s.%s", id, ext)
 			args := []string{"-y", "-i", source, "-map", fmt.Sprintf("0:%d", stream.Index), "-c:s", "copy", r.outputJoin(task, filename)}

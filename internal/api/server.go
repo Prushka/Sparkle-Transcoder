@@ -133,6 +133,7 @@ func (s *Server) toolStatus(c echo.Context) error {
 	specs := []toolSpec{
 		{ID: "ffmpeg", Name: "FFmpeg", Command: s.cfg.Ffmpeg, VersionArgs: []string{"-version"}},
 		{ID: "ffprobe", Name: "FFprobe", Command: s.cfg.Ffprobe, VersionArgs: []string{"-version"}},
+		{ID: "mkvextract", Name: "mkvextract", Command: s.cfg.MKVExtract, VersionArgs: []string{"--version"}},
 		{ID: "handbrake", Name: "HandBrakeCLI", Command: s.cfg.HandbrakeCli, VersionArgs: []string{"--version"}},
 	}
 	tools := make([]toolReadiness, 0, len(specs))
