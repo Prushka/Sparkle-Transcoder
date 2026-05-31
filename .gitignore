@@ -1,6 +1,8 @@
 .DS_Store
 .idea/
 .sparkle-transcoder/
+launch-backend.ps1
+launch-frontend.ps1
 bin/
 tmp/
 
