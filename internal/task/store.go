@@ -38,6 +38,12 @@ type Store struct {
 	refreshing bool
 }
 
+type queuedTaskCandidate struct {
+	id        string
+	createdAt time.Time
+	updatedAt time.Time
+}
+
 var ErrTaskRunning = errors.New("task is running; cancel it before deleting")
 var ErrTaskActive = errors.New("task is already queued or running")
 
@@ -431,6 +437,10 @@ func (s *Store) recoverTask(ctx context.Context, task *Task) error {
 		return err
 	}
 	now := time.Now().UTC()
+	queuedAt := now
+	if task.State == StateQueued && !task.UpdatedAt.IsZero() {
+		queuedAt = task.UpdatedAt
+	}
 
 	s.mu.Lock()
 	if s.cancels[task.ID] != nil {
@@ -441,7 +451,7 @@ func (s *Store) recoverTask(ctx context.Context, task *Task) error {
 		s.mu.Unlock()
 		return err
 	}
-	resetTaskForQueue(task, inputPath, outputDir, now)
+	resetTaskForQueue(task, inputPath, outputDir, queuedAt)
 	if err := s.write(task); err != nil {
 		s.mu.Unlock()
 		return err
@@ -522,9 +532,17 @@ func (s *Store) worker() {
 			if !ok {
 				return
 			}
-			s.runQueued(id)
+			s.runNextQueued(id)
 		}
 	}
+}
+
+func (s *Store) runNextQueued(triggerID string) {
+	task, ctx, cancel, ok := s.claimNextQueued(triggerID)
+	if !ok {
+		return
+	}
+	s.runClaimed(task, ctx, cancel)
 }
 
 func (s *Store) runQueued(id string) {
@@ -532,7 +550,11 @@ func (s *Store) runQueued(id string) {
 	if !ok {
 		return
 	}
+	s.runClaimed(task, ctx, cancel)
+}
 
+func (s *Store) runClaimed(task *Task, ctx context.Context, cancel context.CancelFunc) {
+	id := task.ID
 	err := s.runner.Run(ctx, task)
 	cancel()
 	if err != nil {
@@ -548,6 +570,61 @@ func (s *Store) runQueued(id string) {
 	}
 	s.upsertCache(task)
 	s.releaseRunning(id)
+}
+
+func (s *Store) claimNextQueued(triggerID string) (*Task, context.Context, context.CancelFunc, bool) {
+	for _, id := range s.queuedTaskIDsByPriority(triggerID) {
+		if task, ctx, cancel, ok := s.claimQueued(id); ok {
+			return task, ctx, cancel, true
+		}
+	}
+	return nil, nil, nil, false
+}
+
+func (s *Store) queuedTaskIDsByPriority(triggerID string) []string {
+	candidates := make([]queuedTaskCandidate, 0)
+	seen := map[string]bool{}
+	add := func(task Task) {
+		if task.ID == "" || seen[task.ID] || task.State != StateQueued {
+			return
+		}
+		seen[task.ID] = true
+		candidates = append(candidates, queuedTaskCandidate{
+			id:        task.ID,
+			createdAt: task.CreatedAt,
+			updatedAt: task.UpdatedAt,
+		})
+	}
+
+	s.cacheMu.RLock()
+	for _, task := range s.cache {
+		add(task)
+	}
+	s.cacheMu.RUnlock()
+
+	if triggerID != "" && !seen[triggerID] {
+		if task, err := s.read(triggerID, false); err == nil {
+			add(*task)
+		}
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		left := candidates[i]
+		right := candidates[j]
+		if !left.updatedAt.Equal(right.updatedAt) {
+			return left.updatedAt.After(right.updatedAt)
+		}
+		if !left.createdAt.Equal(right.createdAt) {
+			return left.createdAt.After(right.createdAt)
+		}
+		return left.id > right.id
+	})
+
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.id)
+	}
+	return ids
 }
 
 func (s *Store) claimQueued(id string) (*Task, context.Context, context.CancelFunc, bool) {

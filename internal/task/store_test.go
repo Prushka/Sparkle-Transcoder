@@ -271,6 +271,112 @@ func TestWorkerUpdatesListCacheAfterRun(t *testing.T) {
 	}
 }
 
+func TestWorkerClaimsNewestQueuedTaskFirst(t *testing.T) {
+	output := t.TempDir()
+	enableEncode := false
+	enableSprites := false
+	extractStreams := false
+	base := time.Now().UTC()
+	tasks := []Task{
+		{
+			ID:        "old01",
+			InputPath: filepath.Join(t.TempDir(), "old.mkv"),
+			Input:     "old.mkv",
+			OutputDir: filepath.Join(output, "old01"),
+			State:     StateQueued,
+			Params: Params{
+				EnableEncode:   &enableEncode,
+				EnableSprites:  &enableSprites,
+				ExtractStreams: &extractStreams,
+				VideoExt:       "mp4",
+				AudioKbps:      144,
+			},
+			CreatedAt: base,
+			UpdatedAt: base,
+		},
+		{
+			ID:        "mid02",
+			InputPath: filepath.Join(t.TempDir(), "middle.mkv"),
+			Input:     "middle.mkv",
+			OutputDir: filepath.Join(output, "mid02"),
+			State:     StateQueued,
+			Params: Params{
+				EnableEncode:   &enableEncode,
+				EnableSprites:  &enableSprites,
+				ExtractStreams: &extractStreams,
+				VideoExt:       "mp4",
+				AudioKbps:      144,
+			},
+			CreatedAt: base.Add(time.Second),
+			UpdatedAt: base.Add(time.Second),
+		},
+		{
+			ID:        "new03",
+			InputPath: filepath.Join(t.TempDir(), "new.mkv"),
+			Input:     "new.mkv",
+			OutputDir: filepath.Join(output, "new03"),
+			State:     StateQueued,
+			Params: Params{
+				EnableEncode:   &enableEncode,
+				EnableSprites:  &enableSprites,
+				ExtractStreams: &extractStreams,
+				VideoExt:       "mp4",
+				AudioKbps:      144,
+			},
+			CreatedAt: base.Add(2 * time.Second),
+			UpdatedAt: base.Add(2 * time.Second),
+		},
+	}
+	cache := make([]Task, 0, len(tasks))
+	for i := range tasks {
+		if err := writeTask(&tasks[i]); err != nil {
+			t.Fatal(err)
+		}
+		cache = append(cache, cacheTask(tasks[i]))
+	}
+
+	cfg := &config.Config{Output: output, Ffprobe: "ffprobe", Ffmpeg: "ffmpeg"}
+	runner := NewRunner(cfg, nil, fakeExec{})
+	started := []string{}
+	runner.SetUpdateHook(func(task *Task) {
+		if task.State == StateRunning {
+			started = append(started, task.ID)
+		}
+	})
+	store := &Store{
+		cfg:     cfg,
+		runner:  runner,
+		queue:   make(chan string, len(tasks)),
+		cancels: map[string]context.CancelFunc{},
+		cache:   cache,
+	}
+	for _, task := range tasks {
+		store.queue <- task.ID
+	}
+	close(store.queue)
+
+	done := make(chan struct{})
+	go func() {
+		store.worker()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not finish")
+	}
+
+	want := []string{"new03", "mid02", "old01"}
+	if len(started) != len(want) {
+		t.Fatalf("started = %+v, want %+v", started, want)
+	}
+	for i := range want {
+		if started[i] != want[i] {
+			t.Fatalf("started = %+v, want %+v", started, want)
+		}
+	}
+}
+
 func TestRunnerUpdateHookReportsIntermediateStates(t *testing.T) {
 	output := t.TempDir()
 	input := filepath.Join(t.TempDir(), "Movies", "Example", "Example.mkv")
@@ -556,6 +662,108 @@ func TestRecoverActiveRequeuesPersistedActiveTasks(t *testing.T) {
 	}
 	if len(tasks) != 1 || tasks[0].State != StateQueued {
 		t.Fatalf("cache tasks = %+v, want recovered queued task", tasks)
+	}
+}
+
+func TestRecoverActiveKeepsNewestQueuedTaskFirst(t *testing.T) {
+	root := t.TempDir()
+	output := t.TempDir()
+	enableEncode := false
+	enableSprites := false
+	extractStreams := false
+	base := time.Now().UTC()
+	tasks := []Task{
+		{
+			ID:           "old01",
+			InputPath:    filepath.Join(root, "Movies", "Old", "Old.mkv"),
+			InputRelPath: "Movies/Old/Old.mkv",
+			Input:        "Old.mkv",
+			OutputDir:    filepath.Join(output, "old01"),
+			State:        StateQueued,
+			Params: Params{
+				EnableEncode:   &enableEncode,
+				EnableSprites:  &enableSprites,
+				ExtractStreams: &extractStreams,
+				VideoExt:       "mp4",
+				AudioKbps:      144,
+			},
+			CreatedAt: base,
+			UpdatedAt: base,
+		},
+		{
+			ID:           "new02",
+			InputPath:    filepath.Join(root, "Movies", "New", "New.mkv"),
+			InputRelPath: "Movies/New/New.mkv",
+			Input:        "New.mkv",
+			OutputDir:    filepath.Join(output, "new02"),
+			State:        StateQueued,
+			Params: Params{
+				EnableEncode:   &enableEncode,
+				EnableSprites:  &enableSprites,
+				ExtractStreams: &extractStreams,
+				VideoExt:       "mp4",
+				AudioKbps:      144,
+			},
+			CreatedAt: base.Add(time.Second),
+			UpdatedAt: base.Add(time.Second),
+		},
+	}
+	for i := range tasks {
+		if err := os.MkdirAll(filepath.Dir(tasks[i].InputPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(tasks[i].InputPath, []byte("video"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeTask(&tasks[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := &config.Config{MediaRoot: root, Output: output, Ffprobe: "ffprobe", Ffmpeg: "ffmpeg"}
+	runner := NewRunner(cfg, nil, fakeExec{})
+	started := []string{}
+	runner.SetUpdateHook(func(task *Task) {
+		if task.State == StateRunning {
+			started = append(started, task.ID)
+		}
+	})
+	store := &Store{
+		cfg:     cfg,
+		runner:  runner,
+		queue:   make(chan string, len(tasks)),
+		cancels: map[string]context.CancelFunc{},
+		cache:   []Task{},
+	}
+
+	recovered, err := store.RecoverActive(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != len(tasks) {
+		t.Fatalf("recovered = %d, want %d", recovered, len(tasks))
+	}
+	close(store.queue)
+
+	done := make(chan struct{})
+	go func() {
+		store.worker()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not finish")
+	}
+
+	want := []string{"new02", "old01"}
+	if len(started) != len(want) {
+		t.Fatalf("started = %+v, want %+v", started, want)
+	}
+	for i := range want {
+		if started[i] != want[i] {
+			t.Fatalf("started = %+v, want %+v", started, want)
+		}
 	}
 }
 
