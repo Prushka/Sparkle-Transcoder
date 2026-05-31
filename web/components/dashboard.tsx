@@ -1632,6 +1632,7 @@ function TaskDialog({
   }, [selection?.items[0]?.id]);
 
   const allEncoders = ["hevc", "av1", "h264-10bit", "h264-8bit"];
+  const isBulkSelection = Boolean(selection?.bulk);
   const effectiveQueueMode: QueueMode = selection?.bulk ? queueMode : "replace";
   const queueCreateMode: QueueCreateMode = effectiveQueueMode === "incomplete" ? "incomplete" : "replace";
   const actionItems = React.useMemo(() => (selection ? queueActionItems(selection, effectiveQueueMode) : []), [effectiveQueueMode, selection]);
@@ -1695,12 +1696,19 @@ function TaskDialog({
 
   return (
     <Dialog open={!!selection} onOpenChange={onOpenChange}>
-      <DialogContent className="grid h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] max-w-4xl grid-rows-[auto_minmax(0,1fr)_auto_auto] overflow-hidden sm:h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-2rem)]">
+      <DialogContent
+        className={cn(
+          "grid overflow-hidden",
+          isBulkSelection
+            ? "h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] max-w-4xl grid-rows-[auto_minmax(0,1fr)_auto_auto] sm:h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-2rem)]"
+            : "max-h-[calc(100dvh-2rem)] max-w-xl grid-rows-[auto_minmax(0,auto)_auto_auto]"
+        )}
+      >
         <DialogHeader className="min-w-0 pr-8">
           <DialogTitle>{selection?.title ?? "Transcode"}</DialogTitle>
           <DialogDescription>{selection?.description}</DialogDescription>
         </DialogHeader>
-        <div className="app-scrollbar grid min-h-0 min-w-0 gap-4 overflow-x-hidden overflow-y-auto pr-1">
+        <div className={cn("app-scrollbar grid min-h-0 min-w-0 gap-4 overflow-x-hidden overflow-y-auto pr-1", !isBulkSelection && "content-start")}>
           {selection?.bulk ? (
             <div className="min-w-0">
               <div className="mb-2 text-sm font-medium">Queue mode</div>
