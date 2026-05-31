@@ -49,11 +49,20 @@ func StableID(relPath string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// cleanTitle normalizes display names from path components; it must not treat dots as file extensions.
 func cleanTitle(in string) string {
-	in = strings.TrimSuffix(in, filepath.Ext(in))
-	in = strings.ReplaceAll(in, ".", " ")
 	in = strings.ReplaceAll(in, "_", " ")
 	in = strings.Join(strings.Fields(in), " ")
+	return strings.TrimSpace(in)
+}
+
+// cleanFileTitle also handles dot-separated file basenames from scene-style names.
+func cleanFileTitle(in string) string {
+	in = cleanTitle(in)
+	if !strings.Contains(in, " ") {
+		in = strings.ReplaceAll(in, ".", " ")
+		in = strings.Join(strings.Fields(in), " ")
+	}
 	return strings.TrimSpace(in)
 }
 
@@ -64,7 +73,7 @@ func splitEpisodeTitle(base string) string {
 	}
 	rest := strings.TrimSpace(base[match[1]:])
 	rest = strings.Trim(rest, " -")
-	return cleanTitle(rest)
+	return cleanFileTitle(rest)
 }
 
 func parseItem(root, absPath string, size int64, modTimeNanos int64) (Item, error) {
@@ -86,7 +95,7 @@ func parseItem(root, absPath string, size int64, modTimeNanos int64) (Item, erro
 		Ext:      strings.TrimPrefix(strings.ToLower(filepath.Ext(fileName)), "."),
 		Size:     size,
 		ModTime:  unixNanos(modTimeNanos),
-		Title:    cleanTitle(base),
+		Title:    cleanFileTitle(base),
 	}
 	if len(parts) > 0 {
 		item.Library = parts[0]

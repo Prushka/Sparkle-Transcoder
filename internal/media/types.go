@@ -89,9 +89,11 @@ type ScanStatus struct {
 	FilesScanned   int        `json:"filesScanned"`
 }
 
+const currentIndexVersion = 2
+
 func NewIndex(root string) *Index {
 	return &Index{
-		Version:   1,
+		Version:   currentIndexVersion,
 		MediaRoot: root,
 		Items:     map[string]Item{},
 		Dirs:      map[string]DirectoryState{},

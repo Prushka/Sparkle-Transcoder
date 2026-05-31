@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -174,6 +175,42 @@ func TestScannerFullScansWhenScanConfigChanges(t *testing.T) {
 	}
 	if len(idx.Items) != 2 {
 		t.Fatalf("items after scan config change = %d, want full rescan with 2 items", len(idx.Items))
+	}
+}
+
+func TestScannerFullScansWhenCacheVersionChanges(t *testing.T) {
+	root := testMediaRoot(t)
+	cfg := testConfig(t, root)
+	video := filepath.Join(root, "Anime", "Dr. Stone", "Season 1", "Dr. STONE - S01E01 - STONE WORLD WEBDL-2160p.mkv")
+	writeFile(t, video, "video")
+
+	scanner := NewScanner(cfg)
+	idx, err := scanner.Scan(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := onlyItem(idx)
+	item.Show = "Dr"
+	idx.Items[item.ID] = item
+	idx.Version = currentIndexVersion - 1
+	content, err := json.Marshal(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.ScanCacheFile, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	idx, err = scanner.Scan(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item = onlyItem(idx)
+	if idx.Version != currentIndexVersion {
+		t.Fatalf("version = %d, want %d", idx.Version, currentIndexVersion)
+	}
+	if item.Show != "Dr. Stone" {
+		t.Fatalf("show = %q", item.Show)
 	}
 }
 

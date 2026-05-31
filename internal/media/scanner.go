@@ -139,7 +139,7 @@ func (s *Scanner) scan(ctx context.Context, force bool) (*Index, int, error) {
 		log.Infof("starting without scan cache: %v", err)
 		idx = NewIndex(s.cfg.MediaRoot)
 	}
-	if force || !s.cfg.IncrementalScan || len(idx.Items) == 0 || idx.MediaRoot != s.cfg.MediaRoot || !sameScanConfig(idx.ScanConfig, scanConfig) {
+	if force || !s.cfg.IncrementalScan || len(idx.Items) == 0 || idx.Version != currentIndexVersion || idx.MediaRoot != s.cfg.MediaRoot || !sameScanConfig(idx.ScanConfig, scanConfig) {
 		next := NewIndex(s.cfg.MediaRoot)
 		next.ScanConfig = scanConfig
 		if err := s.fullScan(ctx, next, session); err != nil {
