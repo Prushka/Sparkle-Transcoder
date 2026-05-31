@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path $PSScriptRoot).Path
 $TrayScript = Join-Path $RepoRoot "launch-backend-tray.ps1"
+$IconPath = Join-Path $RepoRoot "assets\sparkle-transcoder.ico"
 $PowerShellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 
 $ShortcutName = "Sparkle Transcoder Backend.lnk"
@@ -34,6 +35,10 @@ function New-BackendShortcut {
         throw "Tray launcher not found at $TrayScript"
     }
 
+    if (-not (Test-Path $IconPath)) {
+        throw "App icon not found at $IconPath"
+    }
+
     if (-not (Test-Path $PowerShellExe)) {
         throw "Windows PowerShell not found at $PowerShellExe"
     }
@@ -46,7 +51,7 @@ function New-BackendShortcut {
     $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$TrayScript`""
     $shortcut.WorkingDirectory = $RepoRoot
     $shortcut.Description = "Start and manage the Sparkle Transcoder backend tray controller."
-    $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,220"
+    $shortcut.IconLocation = "$IconPath,0"
     $shortcut.Save()
 
     Write-Host "Created $Path"

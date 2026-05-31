@@ -21,10 +21,12 @@ if (-not $CreatedNew) {
 
 $script:RepoRoot = (Resolve-Path $PSScriptRoot).Path
 $script:BackendScript = Join-Path $script:RepoRoot "launch-backend.ps1"
+$script:AppIconPath = Join-Path $script:RepoRoot "assets\sparkle-transcoder.ico"
 $script:LogDir = Join-Path $script:RepoRoot ".sparkle-transcoder\logs"
 $script:StdoutLog = Join-Path $script:LogDir "backend.out.log"
 $script:StderrLog = Join-Path $script:LogDir "backend.err.log"
 $script:PowerShellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$script:AppIcon = $null
 $script:BackendProcess = $null
 $script:NotifyIcon = $null
 $script:StatusItem = $null
@@ -32,6 +34,24 @@ $script:StartItem = $null
 $script:StopItem = $null
 $script:RestartItem = $null
 $script:Timer = $null
+
+function Get-AppIcon {
+    if ($null -ne $script:AppIcon) {
+        return $script:AppIcon
+    }
+
+    if (Test-Path $script:AppIconPath) {
+        try {
+            $script:AppIcon = [System.Drawing.Icon]::new($script:AppIconPath)
+            return $script:AppIcon
+        }
+        catch {
+            # Fall back to a system icon if the project icon cannot be loaded.
+        }
+    }
+
+    return [System.Drawing.SystemIcons]::Application
+}
 
 function Show-TrayBalloon {
     param(
@@ -71,14 +91,13 @@ function Update-TrayState {
     if ($running) {
         $script:StatusItem.Text = "Status: Running (PID $($process.Id))"
         $script:NotifyIcon.Text = "Sparkle Backend: Running"
-        $script:NotifyIcon.Icon = [System.Drawing.SystemIcons]::Application
     }
     else {
         $script:StatusItem.Text = "Status: Stopped"
         $script:NotifyIcon.Text = "Sparkle Backend: Stopped"
-        $script:NotifyIcon.Icon = [System.Drawing.SystemIcons]::Warning
     }
 
+    $script:NotifyIcon.Icon = Get-AppIcon
     $script:StartItem.Enabled = -not $running
     $script:StopItem.Enabled = $running
     $script:RestartItem.Enabled = $running
@@ -170,7 +189,7 @@ try {
     [System.Windows.Forms.Application]::EnableVisualStyles()
 
     $script:NotifyIcon = [System.Windows.Forms.NotifyIcon]::new()
-    $script:NotifyIcon.Icon = [System.Drawing.SystemIcons]::Application
+    $script:NotifyIcon.Icon = Get-AppIcon
     $script:NotifyIcon.Text = "Sparkle Backend"
     $script:NotifyIcon.Visible = $true
 
@@ -229,6 +248,10 @@ finally {
     if ($null -ne $script:NotifyIcon) {
         $script:NotifyIcon.Visible = $false
         $script:NotifyIcon.Dispose()
+    }
+
+    if ($null -ne $script:AppIcon) {
+        $script:AppIcon.Dispose()
     }
 
     if ($CreatedNew) {
