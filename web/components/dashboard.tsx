@@ -558,7 +558,7 @@ export function Dashboard() {
         setError(skippedText.trim());
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Queue and replace failed");
+      setError(err instanceof Error ? err.message : "Retry failed");
     } finally {
       setBusy(false);
     }
@@ -576,20 +576,24 @@ export function Dashboard() {
                 </div>
                 <h1 className="truncate text-2xl font-semibold tracking-normal">Sparkle Transcoder</h1>
               </div>
-              <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                <Badge variant="outline">{state.config?.mediaRoot ?? "Media root"}</Badge>
-                <Badge variant="outline">{state.config?.output ?? "Output"}</Badge>
+              <div className="mt-2 flex min-w-0 flex-wrap gap-2 text-xs text-muted-foreground">
+                <Badge variant="outline" title={state.config?.mediaRoot ?? "Media root"}>
+                  <span className="min-w-0 truncate">{state.config?.mediaRoot ?? "Media root"}</span>
+                </Badge>
+                <Badge variant="outline" title={state.config?.output ?? "Output"}>
+                  <span className="min-w-0 truncate">{state.config?.output ?? "Output"}</span>
+                </Badge>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
               <Tip content="Run the default incremental scan">
-                <Button variant="secondary" onClick={() => startScan(false)} disabled={busy || state.scan?.running}>
+                <Button className="w-full sm:w-auto" variant="secondary" onClick={() => startScan(false)} disabled={busy || state.scan?.running}>
                   {state.scan?.running ? <Loader2 className="animate-spin" /> : <FolderSync />}
                   Scan
                 </Button>
               </Tip>
               <Tip content="Ignore cache and rescan configured media folders">
-                <Button variant="outline" onClick={() => startScan(true)} disabled={busy || state.scan?.running}>
+                <Button className="w-full sm:w-auto" variant="outline" onClick={() => startScan(true)} disabled={busy || state.scan?.running}>
                   <RefreshCcw />
                   Full
                 </Button>
@@ -814,13 +818,13 @@ function ToolReadinessSection({ tools }: { tools: ToolReadiness[] }) {
                     {item.ready ? <CheckCircle2 className="size-4 shrink-0 text-primary" /> : <CircleAlert className="size-4 shrink-0 text-amber-300" />}
                     <div className="truncate text-sm font-medium">{item.name}</div>
                   </div>
-                  <div className="mt-1 truncate text-xs text-muted-foreground">{item.command}</div>
+                  <div className="mt-1 break-all text-xs leading-snug text-muted-foreground">{item.command}</div>
                 </div>
                 <Badge variant={item.ready ? "default" : "outline"}>{item.ready ? "Ready" : pending ? "Checking" : "Missing"}</Badge>
               </div>
               <div className="mt-3 min-h-8 text-xs text-muted-foreground">
                 {item.ready ? (
-                  <div className="truncate" title={item.version || item.path}>
+                  <div className="break-words leading-snug" title={item.version || item.path}>
                     {item.version || item.path}
                   </div>
                 ) : (
@@ -848,14 +852,14 @@ function ActiveTaskStrip({ tasks }: { tasks: TranscodeTask[] }) {
           </div>
           <div className="min-w-0">
             <div className="text-xs text-muted-foreground">Processing now</div>
-            <div className="truncate text-sm font-medium">{activeTaskSummary(tasks)}</div>
+            <div className="break-words text-sm font-medium leading-snug">{activeTaskSummary(tasks)}</div>
           </div>
         </div>
         <div className="flex min-w-0 flex-wrap gap-2 md:justify-end">
           {tasks.map((task) => (
             <Badge key={task.id} variant="secondary" className="max-w-full">
               <ListVideo className="mr-1 size-3 shrink-0" />
-              <span className="min-w-0 truncate">
+              <span className="min-w-0 break-words">
                 {taskPhaseLabel(task.state)} / {task.id}
               </span>
             </Badge>
@@ -956,21 +960,21 @@ function TaskToolbar({
             />
           </div>
         </div>
-        <div className="flex shrink-0 flex-wrap gap-2 xl:justify-end">
+        <div className="grid w-full shrink-0 gap-2 sm:flex sm:flex-wrap xl:w-auto xl:justify-end">
           <Tip content="Scan the output folder and reload task metadata">
-            <Button type="button" variant="secondary" onClick={onRefresh} disabled={disabled || refreshing}>
+            <Button className="w-full sm:w-auto" type="button" variant="secondary" onClick={onRefresh} disabled={disabled || refreshing}>
               {refreshing ? <Loader2 className="animate-spin" /> : <RefreshCcw />}
               Refresh
             </Button>
           </Tip>
-          <Tip content="Delete every replaceable task matching the current filters and queue it again with the same parameters">
-            <Button variant="secondary" onClick={onReplaceFiltered} disabled={disabled || replaceableCount === 0}>
+          <Tip content="Delete every retryable task matching the current filters and queue it again with the same parameters">
+            <Button className="w-full sm:w-auto" variant="secondary" onClick={onReplaceFiltered} disabled={disabled || replaceableCount === 0}>
               <RotateCcw />
-              Queue and Replace filtered
+              Retry filtered
             </Button>
           </Tip>
           <Tip content="Delete every deletable task matching the current filters">
-            <Button variant="destructive" onClick={onDeleteFiltered} disabled={disabled || deletableCount === 0}>
+            <Button className="w-full sm:w-auto" variant="destructive" onClick={onDeleteFiltered} disabled={disabled || deletableCount === 0}>
               <Trash2 />
               Delete filtered
             </Button>
@@ -1187,7 +1191,7 @@ function MediaSection({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <Icon className="size-4 shrink-0 text-primary" />
-          <h2 className="truncate text-lg font-semibold tracking-normal">{title}</h2>
+          <h2 className="break-words text-lg font-semibold leading-tight tracking-normal">{title}</h2>
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
       </div>
@@ -1216,9 +1220,9 @@ function MediaCard({
           <Poster item={item} className="aspect-auto h-full min-h-36 w-full rounded-none border-y-0 border-l-0 border-r" />
           <div className="min-w-0 p-3">
             <div className="mb-2 flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <h3 className="truncate text-sm font-semibold">{item.title}</h3>
-                <p className="mt-1 truncate text-xs text-muted-foreground">{item.fileName}</p>
+              <div className="min-w-0 flex-1">
+                <h3 className="break-words text-sm font-semibold leading-snug">{item.title}</h3>
+                <p className="mt-1 break-all text-xs leading-snug text-muted-foreground">{item.fileName}</p>
               </div>
               <MediaBadges item={item} />
             </div>
@@ -1263,11 +1267,11 @@ function EpisodeRow({
           <Poster item={item} className="size-20 shrink-0" />
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <h3 className="truncate text-sm font-semibold">
+              <div className="min-w-0 flex-1">
+                <h3 className="break-words text-sm font-semibold leading-snug">
                   {item.kind === "episode" ? `E${String(item.episode ?? 0).padStart(2, "0")} / ${item.title}` : item.title}
                 </h3>
-                <p className="mt-1 truncate text-xs text-muted-foreground">{item.library}</p>
+                <p className="mt-1 break-all text-xs leading-snug text-muted-foreground">{item.library}</p>
               </div>
               <MediaBadges item={item} />
             </div>
@@ -1347,10 +1351,11 @@ function MediaTaskIndicator({ item, task }: { item: MediaItem; task?: TranscodeT
 }
 
 function NewVersionBadge({ info }: { info: NewVersionInfo }) {
+  const label = `New Version [${formatVersionBytes(info.originalSize)} / ${formatVersionBytes(info.currentSize)}]`;
   return (
-    <Badge variant="warning" className="shrink-0">
+    <Badge variant="warning" className="max-w-full" title={label}>
       <CircleAlert className="mr-1 size-3" />
-      New Version [{formatVersionBytes(info.originalSize)} / {formatVersionBytes(info.currentSize)}]
+      <span className="min-w-0 truncate">{label}</span>
     </Badge>
   );
 }
@@ -1389,7 +1394,7 @@ function MediaTaskDeleteButton({ task, busy, onDelete }: { task?: TranscodeTask;
 
 function MetaLine({ item }: { item: MediaItem }) {
   const parts = [item.show, item.season ? `S${String(item.season).padStart(2, "0")}` : "", formatDate(item.modTime)].filter(Boolean);
-  return <p className="mt-2 truncate text-xs text-muted-foreground">{parts.join(" / ")}</p>;
+  return <p className="mt-2 break-words text-xs leading-snug text-muted-foreground">{parts.join(" / ")}</p>;
 }
 
 function TaskView({
@@ -1423,25 +1428,25 @@ function TaskView({
               <Card>
                 <CardHeader className="pb-3">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0">
+                    <div className="min-w-0 md:flex-1">
                       <div className="mb-2 flex flex-wrap items-center gap-2">
-                        <CardTitle className="min-w-0 truncate">{task.input || task.inputRelPath || task.id}</CardTitle>
+                        <CardTitle className="min-w-0 break-words leading-tight">{task.input || task.inputRelPath || task.id}</CardTitle>
                         {newVersion ? <NewVersionBadge info={newVersion} /> : null}
                       </div>
-                      <p className="truncate text-xs text-muted-foreground">{task.outputDir}</p>
+                      <p className="break-all text-xs leading-snug text-muted-foreground">{task.outputDir}</p>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                    <div className="grid w-full gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center md:justify-end">
                       {isInProgressTask(task) ? (
                         <Tip content="Cancel this in-progress task">
-                          <Button variant="destructive" size="sm" onClick={() => onCancel(task.id)}>
+                          <Button className="w-full sm:w-auto" variant="destructive" size="sm" onClick={() => onCancel(task.id)}>
                             <Ban />
                             Cancel
                           </Button>
                         </Tip>
                       ) : null}
-                      {task.state === "failed" || task.state === "canceled" ? (
+                      {(task.state === "failed" || task.state === "canceled") && !canReplace ? (
                         <Tip content="Queue this task again with the same parameters">
-                          <Button variant="secondary" size="sm" onClick={() => onRetry(task.id)}>
+                          <Button className="w-full sm:w-auto" variant="secondary" size="sm" onClick={() => onRetry(task.id)}>
                             <RotateCcw />
                             Retry
                           </Button>
@@ -1451,6 +1456,7 @@ function TaskView({
                         <Button
                           variant={confirmingReplace === task.id ? "destructive" : "secondary"}
                           size="sm"
+                          className="w-full sm:w-auto"
                           disabled={busy || !canReplace}
                           onClick={() => {
                             if (confirmingReplace === task.id) {
@@ -1464,13 +1470,14 @@ function TaskView({
                           }}
                         >
                           <RotateCcw />
-                          {confirmingReplace === task.id ? "Confirm replace" : "Queue and Replace"}
+                          {confirmingReplace === task.id ? "Confirm retry" : "Retry"}
                         </Button>
                       </Tip>
                       <Tip content={canDeleteTask(task) ? "Click once more to delete this task folder" : "Cancel in-progress tasks before deleting"}>
                         <Button
                           variant={confirmingDelete === task.id ? "destructive" : "outline"}
                           size="sm"
+                          className="w-full sm:w-auto"
                           disabled={busy || !canDeleteTask(task)}
                           onClick={() => {
                             if (confirmingDelete === task.id) {
@@ -1492,11 +1499,11 @@ function TaskView({
                 <CardContent>
                   <Progress value={stateProgress(task.state)} />
                   <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-5">
-                    <span>Updated {formatDate(task.updatedAt)}</span>
-                    <span>{task.encodedCodecs?.length ? task.encodedCodecs.join(", ") : "No encoded codec"}</span>
-                    <span>{taskSubtitleLanguages(task).length ? `${taskSubtitleLanguages(task).join(", ")} subtitles` : "No subtitles"}</span>
-                    <span>{task.duration ? `${Math.round(task.duration / 60)} min` : "Duration pending"}</span>
-                    <span>{task.files ? `${Object.keys(task.files).length} files` : "Files pending"}</span>
+                    <span className="min-w-0 truncate">Updated {formatDate(task.updatedAt)}</span>
+                    <span className="min-w-0 truncate">{task.encodedCodecs?.length ? task.encodedCodecs.join(", ") : "No encoded codec"}</span>
+                    <span className="min-w-0 truncate">{taskSubtitleLanguages(task).length ? `${taskSubtitleLanguages(task).join(", ")} subtitles` : "No subtitles"}</span>
+                    <span className="min-w-0 truncate">{task.duration ? `${Math.round(task.duration / 60)} min` : "Duration pending"}</span>
+                    <span className="min-w-0 truncate">{task.files ? `${Object.keys(task.files).length} files` : "Files pending"}</span>
                   </div>
                   {task.error ? (
                     <div className="mt-3 flex gap-2 rounded-md border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-100">
@@ -1510,7 +1517,7 @@ function TaskView({
                         .slice(0, 8)
                         .map(([name, size]) => (
                           <a
-                            className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                            className="max-w-full rounded-md border border-border px-2 py-1 text-xs break-all text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                             href={outputUrl(task, name)}
                             target="_blank"
                             rel="noreferrer"
@@ -1593,13 +1600,13 @@ function ReplaceFilteredDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Queue and replace filtered tasks</DialogTitle>
+          <DialogTitle>Retry filtered tasks</DialogTitle>
           <DialogDescription>
             {plan.candidates.length.toLocaleString()} of {plan.total.toLocaleString()} filtered task {pluralize("folder", plan.total)} will be deleted and queued again with the same task parameters.
           </DialogDescription>
         </DialogHeader>
         <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-foreground">
-          This removes generated files and job metadata before creating replacement tasks. {skippedCount ? `${skippedCount.toLocaleString()} filtered task${skippedCount === 1 ? "" : "s"} will be skipped because ${taskReplaceSkipReason(plan)}.` : "Library media files are not touched."}
+          This removes generated files and job metadata before retrying tasks. {skippedCount ? `${skippedCount.toLocaleString()} filtered task${skippedCount === 1 ? "" : "s"} will be skipped because ${taskReplaceSkipReason(plan)}.` : "Library media files are not touched."}
         </div>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
@@ -1607,7 +1614,7 @@ function ReplaceFilteredDialog({
           </Button>
           <Button variant="destructive" onClick={onConfirm} disabled={busy || plan.candidates.length === 0}>
             {busy ? <Loader2 className="animate-spin" /> : <RotateCcw />}
-            Queue and Replace {plan.candidates.length.toLocaleString()}
+            Retry {plan.candidates.length.toLocaleString()}
           </Button>
         </div>
       </DialogContent>
@@ -1931,11 +1938,11 @@ function TaskDialog({
           ) : null}
         </div>
         <Separator />
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button className="w-full sm:w-auto" variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={actionDisabled} variant={effectiveQueueMode === "delete" ? "destructive" : "default"}>
+          <Button className="w-full sm:w-auto" onClick={submit} disabled={actionDisabled} variant={effectiveQueueMode === "delete" ? "destructive" : "default"}>
             {busy ? <Loader2 className="animate-spin" /> : effectiveQueueMode === "delete" ? <Trash2 /> : <Play />}
             {effectiveQueueMode === "delete"
               ? `Delete ${selectedExistingTaskCount.toLocaleString()} ${pluralize("task", selectedExistingTaskCount)}`
@@ -2003,14 +2010,14 @@ function LabeledSlider({
 function Stat({ icon: Icon, label, value, detail }: { icon: React.ElementType; label: string; value: string; detail: string }) {
   return (
     <Card>
-      <CardContent className="flex min-w-0 items-center gap-3 p-4">
+      <CardContent className="flex min-w-0 items-start gap-3 p-4">
         <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-primary">
           <Icon className="size-5" />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="text-xs text-muted-foreground">{label}</div>
-          <div className="truncate text-xl font-semibold">{value}</div>
-          <div className="truncate text-xs text-muted-foreground">{detail}</div>
+          <div className="break-words text-xl font-semibold leading-tight">{value}</div>
+          <div className="break-words text-xs leading-snug text-muted-foreground">{detail}</div>
         </div>
       </CardContent>
     </Card>
@@ -2190,19 +2197,19 @@ function canQueueReplaceTask(task: TranscodeTask, index: CurrentMediaIndex) {
 }
 
 function taskReplaceButtonTip(task: TranscodeTask, index: CurrentMediaIndex, confirming: boolean) {
-  if (!canDeleteTask(task)) return "Cancel in-progress tasks before queueing replacements";
-  if (!mediaForTask(task, index)) return "Current media is unavailable; run a scan before queueing a replacement";
-  return confirming ? "Click once more to delete this task folder and queue it again" : "Delete this task folder and queue it again with the same parameters";
+  if (!canDeleteTask(task)) return "Cancel in-progress tasks before retrying";
+  if (!mediaForTask(task, index)) return "Current media is unavailable; run a scan before retrying";
+  return confirming ? "Click once more to delete this task folder and retry it" : "Delete this task folder and queue it again with the same parameters";
 }
 
 function taskReplaceBlockedMessage(plan: TaskReplacePlan) {
   if (plan.runningTasks.length && !plan.missingMediaTasks.length) {
-    return "No replacement tasks queued. Cancel in-progress tasks before queueing replacements.";
+    return "No tasks retried. Cancel in-progress tasks before retrying.";
   }
   if (plan.missingMediaTasks.length && !plan.runningTasks.length) {
-    return "No replacement tasks queued. Current media could not be matched; run a scan first.";
+    return "No tasks retried. Current media could not be matched; run a scan first.";
   }
-  return "No replacement tasks queued. Matching tasks are either in progress or missing current media.";
+  return "No tasks retried. Matching tasks are either in progress or missing current media.";
 }
 
 function taskReplaceSkipReason(plan: TaskReplacePlan) {

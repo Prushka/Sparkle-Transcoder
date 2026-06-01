@@ -31,6 +31,7 @@ COPY --from=builder --chown=nextjs:nextjs /app/package-lock.json ./package-lock.
 COPY --from=builder --chown=nextjs:nextjs /app/next.config.mjs ./next.config.mjs
 COPY --from=builder --chown=nextjs:nextjs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nextjs /app/.next ./.next
+COPY --from=builder --chown=nextjs:nextjs /app/public ./public
 
 USER nextjs
 
