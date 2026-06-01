@@ -401,9 +401,6 @@ export function Dashboard() {
         tasks: created.reduce((tasks, task) => upsertTask(tasks, task), current.tasks.filter((task) => !deletedTaskIds.has(task.id)))
       }));
       setSelected(null);
-      if (created.length) {
-        setActiveTab("tasks");
-      }
       const skippedText = plan.skippedCompleteItems.length
         ? ` ${plan.skippedCompleteItems.length.toLocaleString()} complete ${selectionMediaLabel(selection.items, plan.skippedCompleteItems.length)} skipped.`
         : "";
@@ -544,7 +541,6 @@ export function Dashboard() {
         taskStatus: removeActiveTasks(current.taskStatus, deletedIds)
       }));
       onDone?.();
-      setActiveTab("tasks");
 
       const skipped = plan.runningTasks.length + plan.missingMediaTasks.length + result.failures.length;
       if (createFailures.length) {
@@ -1087,6 +1083,8 @@ function LibraryView({
   const shows = groupEpisodes(items.filter((item) => item.kind === "episode"), sort);
   const unknown = items.filter((item) => item.kind === "unknown");
   const queueEpisodes = queueItems.filter((item) => item.kind === "episode");
+  const [collapsedShows, setCollapsedShows] = React.useState<string[]>([]);
+  const [collapsedSeasons, setCollapsedSeasons] = React.useState<string[]>([]);
 
   return (
     <div className="space-y-6">
@@ -1101,11 +1099,14 @@ function LibraryView({
       ) : null}
       {shows.map((show) => {
         const showItems = itemsForShow(queueEpisodes, show.name);
+        const showCollapsed = collapsedShows.includes(show.name);
         return (
           <MediaSection
             title={show.name}
             icon={Tv}
             key={show.name}
+            collapsed={showCollapsed}
+            onToggle={() => setCollapsedShows((current) => toggleID(current, show.name))}
             action={
               <Tip content={`Queue all ${showItems.length.toLocaleString()} episodes in this show`}>
                 <Button
@@ -1120,44 +1121,65 @@ function LibraryView({
               </Tip>
             }
           >
-            <div className="space-y-4">
-              {show.seasons.map((season) => {
-                const seasonItems = itemsForSeason(showItems, season.number);
-                return (
-                  <div key={`${show.name}-${season.number}`} className="space-y-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                        <span>Season {season.number}</span>
-                        <Badge variant="outline">{season.items.length}</Badge>
+            {showCollapsed ? null : (
+              <div className="space-y-4">
+                {show.seasons.map((season) => {
+                  const seasonItems = itemsForSeason(showItems, season.number);
+                  const seasonKey = `${show.name}:${season.number}`;
+                  const seasonCollapsed = collapsedSeasons.includes(seasonKey);
+                  return (
+                    <div key={`${show.name}-${season.number}`} className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Tip content={`${seasonCollapsed ? "Expand" : "Collapse"} season ${season.number}`}>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="size-7 shrink-0"
+                              aria-expanded={!seasonCollapsed}
+                              aria-label={`${seasonCollapsed ? "Expand" : "Collapse"} season ${season.number}`}
+                              onClick={() => setCollapsedSeasons((current) => toggleID(current, seasonKey))}
+                            >
+                              {seasonCollapsed ? <ChevronRight /> : <ChevronDown />}
+                            </Button>
+                          </Tip>
+                          <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-muted-foreground">
+                            <span className="truncate">Season {season.number}</span>
+                            <Badge variant="outline">{season.items.length}</Badge>
+                          </div>
+                        </div>
+                        <Tip content={`Queue all ${seasonItems.length.toLocaleString()} episodes in this season`}>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() =>
+                              onTranscode(
+                                seasonItems,
+                                `${show.name} / Season ${season.number}`,
+                                selectionCountDescription(seasonItems.length, "episode"),
+                                true
+                              )
+                            }
+                            disabled={!seasonItems.length}
+                          >
+                            <Play />
+                            Queue season
+                          </Button>
+                        </Tip>
                       </div>
-                      <Tip content={`Queue all ${seasonItems.length.toLocaleString()} episodes in this season`}>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() =>
-                            onTranscode(
-                              seasonItems,
-                              `${show.name} / Season ${season.number}`,
-                              selectionCountDescription(seasonItems.length, "episode"),
-                              true
-                            )
-                          }
-                          disabled={!seasonItems.length}
-                        >
-                          <Play />
-                          Queue season
-                        </Button>
-                      </Tip>
+                      {seasonCollapsed ? null : (
+                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                          {season.items.map((item) => (
+                            <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} busy={busy} key={item.id} onTranscode={(media) => onTranscode([media])} onDeleteTask={onDeleteTask} />
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                      {season.items.map((item) => (
-                        <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} busy={busy} key={item.id} onTranscode={(media) => onTranscode([media])} onDeleteTask={onDeleteTask} />
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </MediaSection>
         );
       })}
@@ -1178,11 +1200,15 @@ function LibraryView({
 function MediaSection({
   title,
   icon: Icon,
+  collapsed,
+  onToggle,
   action,
   children
 }: {
   title: string;
   icon: React.ElementType;
+  collapsed?: boolean;
+  onToggle?: () => void;
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
@@ -1190,6 +1216,21 @@ function MediaSection({
     <section>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
+          {onToggle ? (
+            <Tip content={`${collapsed ? "Expand" : "Collapse"} ${title}`}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0"
+                aria-expanded={!collapsed}
+                aria-label={`${collapsed ? "Expand" : "Collapse"} ${title}`}
+                onClick={onToggle}
+              >
+                {collapsed ? <ChevronRight /> : <ChevronDown />}
+              </Button>
+            </Tip>
+          ) : null}
           <Icon className="size-4 shrink-0 text-primary" />
           <h2 className="break-words text-lg font-semibold leading-tight tracking-normal">{title}</h2>
         </div>
@@ -1216,9 +1257,9 @@ function MediaCard({
   return (
     <motion.div className="h-full" layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
       <Card className="h-full overflow-hidden">
-        <div className="grid grid-cols-[92px_minmax(0,1fr)]">
-          <Poster item={item} className="aspect-auto h-full min-h-36 w-full rounded-none border-y-0 border-l-0 border-r" />
-          <div className="min-w-0 p-3">
+        <div className="grid h-full min-h-[168px] grid-cols-[112px_minmax(0,1fr)] sm:min-h-[186px] sm:grid-cols-[124px_minmax(0,1fr)]">
+          <Poster item={item} className="aspect-auto h-full min-h-[168px] w-full self-stretch rounded-none border-y-0 border-l-0 border-r sm:min-h-[186px]" />
+          <div className="flex min-w-0 flex-col p-3">
             <div className="mb-2 flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
                 <h3 className="break-words text-sm font-semibold leading-snug">{item.title}</h3>
@@ -1228,7 +1269,7 @@ function MediaCard({
             </div>
             <MetaLine item={item} />
             <MediaTaskIndicator item={item} task={task} />
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-3">
               <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{formatBytes(item.size)}</span>
               <div className="flex shrink-0 items-center gap-2">
                 <MediaTaskDeleteButton task={task} busy={busy} onDelete={onDeleteTask} />
@@ -1263,9 +1304,9 @@ function EpisodeRow({
   return (
     <motion.div className="h-full" layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
       <Card className="h-full">
-        <CardContent className="flex gap-3 p-3">
-          <Poster item={item} className="size-20 shrink-0" />
-          <div className="min-w-0 flex-1">
+        <CardContent className="flex h-full gap-3 p-3">
+          <Poster item={item} className="size-20 shrink-0 self-start" />
+          <div className="flex min-w-0 flex-1 flex-col">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
                 <h3 className="break-words text-sm font-semibold leading-snug">
@@ -1277,7 +1318,7 @@ function EpisodeRow({
             </div>
             <MetaLine item={item} />
             <MediaTaskIndicator item={item} task={task} />
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-2">
               <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{item.ext.toUpperCase()} / {formatBytes(item.size)}</span>
               <div className="flex shrink-0 items-center gap-2">
                 <MediaTaskDeleteButton task={task} busy={busy} onDelete={onDeleteTask} />
