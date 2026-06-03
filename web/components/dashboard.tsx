@@ -90,6 +90,7 @@ type TriStateFilters = Record<string, TriStateFilterState>;
 
 const IN_PROGRESS_FILTER = "In Progress";
 const NEW_VERSION_FILTER = "New Version";
+const STORYBOARDS_FILTER = "Storyboards";
 const LIVE_TASK_POLL_INTERVAL_MS = 30000;
 
 type TaskSelection = {
@@ -1001,7 +1002,7 @@ function TaskToolbar({
         </div>
         <TriStateFilterGroup
           title="Task Status"
-          options={[IN_PROGRESS_FILTER, NEW_VERSION_FILTER]}
+          options={[IN_PROGRESS_FILTER, NEW_VERSION_FILTER, STORYBOARDS_FILTER]}
           filters={taskStatusFilters}
           onChange={onTaskStatusFiltersChange}
           emptyLabel="No task status options"
@@ -2365,11 +2366,18 @@ function taskMatchesStatusFilters(task: TranscodeTask, filters: TriStateFilters,
   const excluded = triStateFiltersByState(filters, "exclude");
   const inProgress = isInProgressTask(task);
   const newVersion = taskHasNewVersion(task, currentMediaIndex);
+  const hasStoryboards = taskHasStoryboards(task);
   if (included.includes(IN_PROGRESS_FILTER) && !inProgress) return false;
   if (excluded.includes(IN_PROGRESS_FILTER) && inProgress) return false;
   if (included.includes(NEW_VERSION_FILTER) && !newVersion) return false;
   if (excluded.includes(NEW_VERSION_FILTER) && newVersion) return false;
+  if (included.includes(STORYBOARDS_FILTER) && !hasStoryboards) return false;
+  if (excluded.includes(STORYBOARDS_FILTER) && hasStoryboards) return false;
   return true;
+}
+
+function taskHasStoryboards(task: TranscodeTask) {
+  return Boolean(task.files?.["storyboard.vtt"]);
 }
 
 function taskMatchesCodecFilters(codecs: string[], filters: TriStateFilters) {
