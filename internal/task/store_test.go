@@ -506,6 +506,16 @@ func TestRunnerExtractsDVDSubtitleWithMKVExtract(t *testing.T) {
 	}
 }
 
+func TestParseProbeDimensionsAcceptsTrailingSeparator(t *testing.T) {
+	width, height, ok := parseProbeDimensions([]byte("3840x2076x\r\n"))
+	if !ok {
+		t.Fatal("parseProbeDimensions returned ok=false")
+	}
+	if width != 3840 || height != 2076 {
+		t.Fatalf("dimensions = %dx%d, want 3840x2076", width, height)
+	}
+}
+
 func TestRecordRunnerTaskUpdatesCacheAndStatus(t *testing.T) {
 	output := t.TempDir()
 	now := time.Now().UTC()

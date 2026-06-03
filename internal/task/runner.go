@@ -480,10 +480,11 @@ func (r *Runner) probe(ctx context.Context, task *Task) error {
 	if err != nil {
 		return err
 	}
-	parts := strings.Split(strings.TrimSpace(string(out)), "x")
-	if len(parts) == 2 {
-		task.Width, _ = strconv.Atoi(parts[0])
-		task.Height, _ = strconv.Atoi(parts[1])
+	if width, height, ok := parseProbeDimensions(out); ok {
+		task.Width = width
+		task.Height = height
+	} else {
+		log.Warnf("unable to parse video dimensions for %s from ffprobe output %q", task.Input, strings.TrimSpace(string(out)))
 	}
 	if task.Params.EnableSprites != nil && *task.Params.EnableSprites && task.Duration > 0 && task.Width > 0 && task.Height > 0 {
 		if err := r.generateSprites(ctx, task, videoFile); err != nil {
@@ -533,6 +534,30 @@ func (r *Runner) generateSprites(ctx context.Context, task *Task, videoFile stri
 		return err
 	}
 	return os.WriteFile(r.outputJoin(task, ThumbnailVTT), []byte(vtt), 0644)
+}
+
+func parseProbeDimensions(out []byte) (int, int, bool) {
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return 0, 0, false
+	}
+	fields := strings.Split(line, "x")
+	values := make([]int, 0, 2)
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		value, err := strconv.Atoi(field)
+		if err != nil || value <= 0 {
+			return 0, 0, false
+		}
+		values = append(values, value)
+		if len(values) == 2 {
+			return values[0], values[1], true
+		}
+	}
+	return 0, 0, false
 }
 
 func (r *Runner) copyRelatedFiles(ctx context.Context, task *Task) error {
