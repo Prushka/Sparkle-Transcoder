@@ -78,6 +78,7 @@ type TaskReplaceCandidate = {
 };
 type TaskReplacePlan = {
   candidates: TaskReplaceCandidate[];
+  runningCandidates: TaskReplaceCandidate[];
   runningTasks: TranscodeTask[];
   missingMediaTasks: TranscodeTask[];
   total: number;
@@ -92,6 +93,8 @@ const IN_PROGRESS_FILTER = "In Progress";
 const NEW_VERSION_FILTER = "New Version";
 const STORYBOARDS_FILTER = "Storyboards";
 const LIVE_TASK_POLL_INTERVAL_MS = 30000;
+const TASK_CANCEL_POLL_INTERVAL_MS = 1000;
+const TASK_CANCEL_TIMEOUT_MS = 120000;
 
 type TaskSelection = {
   title: string;
@@ -309,8 +312,9 @@ export function Dashboard() {
     [codecFilters, currentMediaIndex, state.tasks, subtitleFilters, taskCompletion, taskQuery, taskStatusFilters]
   );
   const visibleTasks = React.useMemo(() => filteredTasks.slice(0, taskLimit), [filteredTasks, taskLimit]);
-  const deletableFilteredTasks = React.useMemo(() => filteredTasks.filter(canDeleteTask), [filteredTasks]);
+  const runningFilteredTaskCount = React.useMemo(() => filteredTasks.filter(isInProgressTask).length, [filteredTasks]);
   const replaceFilteredPlan = React.useMemo(() => buildTaskReplacePlan(filteredTasks, currentMediaIndex), [currentMediaIndex, filteredTasks]);
+  const replaceFilteredCount = taskReplaceActionCount(replaceFilteredPlan);
   const tasksRefreshing = taskRefreshing || Boolean(state.taskStatus?.refreshing);
   const activeRunnerTasks = state.taskStatus?.activeTasks ?? [];
   const taskStatDetail = activeRunnerTasks.length ? `Now ${activeTaskSummary(activeRunnerTasks)}` : `${countInProgressTasks(state.tasks)} in progress`;
@@ -352,8 +356,52 @@ export function Dashboard() {
     });
   }, [state.tasks]);
 
+  const loadTaskSnapshot = React.useCallback(async () => {
+    const taskResponse = await api.tasks();
+    const snapshot = mergeTaskResponse(taskResponse, []);
+    setState((current) => ({
+      ...current,
+      ...mergeTaskResponse(taskResponse, current.tasks)
+    }));
+    return snapshot.tasks;
+  }, []);
+
+  const cancelTasksAndWait = React.useCallback(async (tasksToCancel: TranscodeTask[]) => {
+    const activeTasks = uniqueTasks(tasksToCancel.filter(isInProgressTask));
+    if (!activeTasks.length) return loadTaskSnapshot();
+
+    const ids = activeTasks.map((task) => task.id);
+    const idSet = new Set(ids);
+    setError(`Canceling ${ids.length.toLocaleString()} in-progress ${pluralize("task", ids.length)}...`);
+
+    const canceledTasks = await Promise.all(ids.map((id) => api.cancelTask(id)));
+    setState((current) => {
+      let taskStatus = current.taskStatus;
+      for (const task of canceledTasks) {
+        taskStatus = updateTaskStatusTask(taskStatus, task);
+      }
+      return {
+        ...current,
+        tasks: canceledTasks.reduce((tasks, task) => upsertTask(tasks, task), current.tasks),
+        taskStatus
+      };
+    });
+
+    const deadline = Date.now() + TASK_CANCEL_TIMEOUT_MS;
+    let latestTasks = await loadTaskSnapshot();
+    while (latestTasks.some((task) => idSet.has(task.id) && isInProgressTask(task))) {
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for ${ids.length.toLocaleString()} ${pluralize("task", ids.length)} to cancel`);
+      }
+      await delay(TASK_CANCEL_POLL_INTERVAL_MS);
+      latestTasks = await loadTaskSnapshot();
+    }
+    return latestTasks;
+  }, [loadTaskSnapshot]);
+
   const createTasks = async (selection: TaskSelection, params: TaskParams, queueMode: QueueCreateMode) => {
-    const plan = buildQueuePlan(selection.items, state.tasks, selection.bulk ? queueMode : "replace");
+    let taskSnapshot = state.tasks;
+    let plan = buildQueuePlan(selection.items, taskSnapshot, selection.bulk ? queueMode : "replace");
     if (!plan.items.length) {
       setSelected(null);
       setError(plan.skippedCompleteItems.length ? `No tasks queued. ${plan.skippedCompleteItems.length.toLocaleString()} complete ${selectionMediaLabel(selection.items, plan.skippedCompleteItems.length)} skipped.` : "");
@@ -361,13 +409,17 @@ export function Dashboard() {
     }
     setBusy(true);
     try {
+      if (plan.runningTasks.length) {
+        taskSnapshot = await cancelTasksAndWait(plan.runningTasks);
+        plan = buildQueuePlan(selection.items, taskSnapshot, selection.bulk ? queueMode : "replace");
+        if (!plan.items.length) {
+          setSelected(null);
+          setError(plan.skippedCompleteItems.length ? `No tasks queued. ${plan.skippedCompleteItems.length.toLocaleString()} complete ${selectionMediaLabel(selection.items, plan.skippedCompleteItems.length)} skipped.` : "");
+          return;
+        }
+      }
       const selectedItems = plan.items;
       const existingTasks = plan.existingTasks;
-      const runningTasks = plan.runningTasks;
-      if (runningTasks.length) {
-        setError(`${runningTasks.length.toLocaleString()} existing task${runningTasks.length === 1 ? " is" : "s are"} in progress and cannot be deleted yet. Cancel or wait for ${runningTasks.length === 1 ? "it" : "them"} before queueing replacements.`);
-        return;
-      }
 
       let deletedTaskIds = new Set<string>();
       if (existingTasks.length) {
@@ -444,6 +496,10 @@ export function Dashboard() {
   const deleteTask = async (id: string) => {
     setBusy(true);
     try {
+      const task = state.tasks.find((candidate) => candidate.id === id);
+      if (task && isInProgressTask(task)) {
+        await cancelTasksAndWait([task]);
+      }
       await api.deleteTask(id);
       setState((current) => ({
         ...current,
@@ -461,15 +517,15 @@ export function Dashboard() {
   const deleteSelectionTasks = async (selection: TaskSelection) => {
     const existingTasks = existingTasksForMedia(selection.items, state.tasks);
     if (!existingTasks.length) return;
-    const runningTasks = existingTasks.filter((task) => !canDeleteTask(task));
-    if (runningTasks.length) {
-      setError(`${runningTasks.length.toLocaleString()} existing task${runningTasks.length === 1 ? " is" : "s are"} in progress and cannot be deleted yet. Cancel or wait for ${runningTasks.length === 1 ? "it" : "them"} before deleting task folders.`);
-      return;
-    }
 
     setBusy(true);
     try {
-      const ids = existingTasks.map((task) => task.id);
+      let tasksToDelete = existingTasks;
+      if (tasksToDelete.some(isInProgressTask)) {
+        const latestTasks = await cancelTasksAndWait(tasksToDelete.filter(isInProgressTask));
+        tasksToDelete = latestTasksForIds(tasksToDelete, latestTasks);
+      }
+      const ids = tasksToDelete.map((task) => task.id);
       const result = await api.deleteTasks(ids);
       const failedIds = new Set(result.failures.map((failure) => failure.id));
       const deletedIds = new Set(ids.filter((id) => !failedIds.has(id)));
@@ -488,10 +544,15 @@ export function Dashboard() {
   };
 
   const deleteFilteredTasks = async () => {
-    const ids = deletableFilteredTasks.map((task) => task.id);
-    if (!ids.length) return;
+    if (!filteredTasks.length) return;
     setBusy(true);
     try {
+      let tasksToDelete = filteredTasks;
+      if (tasksToDelete.some(isInProgressTask)) {
+        const latestTasks = await cancelTasksAndWait(tasksToDelete.filter(isInProgressTask));
+        tasksToDelete = latestTasksForIds(tasksToDelete, latestTasks);
+      }
+      const ids = tasksToDelete.map((task) => task.id);
       const result = await api.deleteTasks(ids);
       const failedIds = new Set(result.failures.map((failure) => failure.id));
       const deletedIds = new Set(ids.filter((id) => !failedIds.has(id)));
@@ -510,14 +571,24 @@ export function Dashboard() {
   };
 
   const queueReplaceTasks = async (tasksToReplace: TranscodeTask[], onDone?: () => void) => {
-    const plan = buildTaskReplacePlan(tasksToReplace, currentMediaIndex);
-    if (!plan.candidates.length) {
+    let replaceTasks = uniqueTasks(tasksToReplace);
+    let plan = buildTaskReplacePlan(replaceTasks, currentMediaIndex);
+    if (!taskReplaceActionCount(plan)) {
       setError(taskReplaceBlockedMessage(plan));
       return;
     }
 
     setBusy(true);
     try {
+      if (plan.runningTasks.length) {
+        const latestTasks = await cancelTasksAndWait(plan.runningTasks);
+        replaceTasks = latestTasksForIds(replaceTasks, latestTasks);
+        plan = buildTaskReplacePlan(replaceTasks, currentMediaIndex);
+        if (!taskReplaceActionCount(plan)) {
+          setError(taskReplaceBlockedMessage(plan));
+          return;
+        }
+      }
       const ids = plan.candidates.map(({ task }) => task.id);
       const result = await api.deleteTasks(ids);
       const failedDeleteIds = new Set(result.failures.map((failure) => failure.id));
@@ -543,14 +614,14 @@ export function Dashboard() {
       }));
       onDone?.();
 
-      const skipped = plan.runningTasks.length + plan.missingMediaTasks.length + result.failures.length;
+      const skipped = plan.missingMediaTasks.length + result.failures.length;
       if (createFailures.length) {
         setError(`${created.length.toLocaleString()} replacement ${pluralize("task", created.length)} queued, ${createFailures.length.toLocaleString()} failed to queue.${skipped ? ` ${skipped.toLocaleString()} skipped.` : ""} ${createFailures[0]}`);
       } else if (result.failures.length) {
         setError(`${created.length.toLocaleString()} replacement ${pluralize("task", created.length)} queued, ${result.failures.length.toLocaleString()} could not be deleted. ${result.failures[0].error}`);
       } else {
-        const skippedText = plan.runningTasks.length || plan.missingMediaTasks.length
-          ? ` ${plan.runningTasks.length + plan.missingMediaTasks.length} skipped.`
+        const skippedText = plan.missingMediaTasks.length
+          ? ` ${plan.missingMediaTasks.length} skipped.`
           : "";
         setError(skippedText.trim());
       }
@@ -661,8 +732,8 @@ export function Dashboard() {
                 onSubtitleFiltersChange={setSubtitleFilters}
                 filteredCount={filteredTasks.length}
                 totalCount={state.tasks.length}
-                deletableCount={deletableFilteredTasks.length}
-                replaceableCount={replaceFilteredPlan.candidates.length}
+                deletableCount={filteredTasks.length}
+                replaceableCount={replaceFilteredCount}
                 onRefresh={refreshTasks}
                 refreshing={tasksRefreshing}
                 refreshedAt={state.taskStatus?.refreshedAt}
@@ -695,8 +766,8 @@ export function Dashboard() {
       <DeleteFilteredDialog
         open={deleteFilteredOpen}
         totalCount={filteredTasks.length}
-        deletableCount={deletableFilteredTasks.length}
-        skippedCount={filteredTasks.length - deletableFilteredTasks.length}
+        deletableCount={filteredTasks.length}
+        runningCount={runningFilteredTaskCount}
         busy={busy}
         onOpenChange={setDeleteFilteredOpen}
         onConfirm={deleteFilteredTasks}
@@ -970,7 +1041,7 @@ function TaskToolbar({
               Retry filtered
             </Button>
           </Tip>
-          <Tip content="Delete every deletable task matching the current filters">
+          <Tip content="Delete every task matching the current filters. In-progress tasks will be canceled first.">
             <Button className="w-full sm:w-auto" variant="destructive" onClick={onDeleteFiltered} disabled={disabled || deletableCount === 0}>
               <Trash2 />
               Delete filtered
@@ -1412,12 +1483,12 @@ function MediaTaskDeleteButton({ task, busy, onDelete }: { task?: TranscodeTask;
   if (!task) return null;
   const deletable = canDeleteTask(task);
   return (
-    <Tip content={deletable ? "Click once more to delete this task folder" : "Cancel in-progress tasks before deleting"}>
+    <Tip content={deletable ? "Click once more to delete this task folder" : "Click once more to cancel this task and delete its folder"}>
       <Button
         type="button"
         variant={confirmingDelete ? "destructive" : "outline"}
         size="sm"
-        disabled={busy || !deletable}
+        disabled={busy}
         onClick={() => {
           if (confirmingDelete) {
             setConfirmingDelete(false);
@@ -1465,6 +1536,7 @@ function TaskView({
         {tasks.map((task) => {
           const newVersion = newVersionInfoForTask(task, currentMediaIndex);
           const canReplace = canQueueReplaceTask(task, currentMediaIndex);
+          const canQueueReplacement = canQueueReplaceTaskAfterCancel(task, currentMediaIndex);
           return (
             <motion.div key={task.id} layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
               <Card>
@@ -1499,7 +1571,7 @@ function TaskView({
                           variant={confirmingReplace === task.id ? "destructive" : "secondary"}
                           size="sm"
                           className="w-full sm:w-auto"
-                          disabled={busy || !canReplace}
+                          disabled={busy || !canQueueReplacement}
                           onClick={() => {
                             if (confirmingReplace === task.id) {
                               setConfirmingReplace("");
@@ -1515,12 +1587,12 @@ function TaskView({
                           {confirmingReplace === task.id ? "Confirm retry" : "Retry"}
                         </Button>
                       </Tip>
-                      <Tip content={canDeleteTask(task) ? "Click once more to delete this task folder" : "Cancel in-progress tasks before deleting"}>
+                      <Tip content={canDeleteTask(task) ? "Click once more to delete this task folder" : "Click once more to cancel this task and delete its folder"}>
                         <Button
                           variant={confirmingDelete === task.id ? "destructive" : "outline"}
                           size="sm"
                           className="w-full sm:w-auto"
-                          disabled={busy || !canDeleteTask(task)}
+                          disabled={busy}
                           onClick={() => {
                             if (confirmingDelete === task.id) {
                               setConfirmingDelete("");
@@ -1585,7 +1657,7 @@ function DeleteFilteredDialog({
   open,
   totalCount,
   deletableCount,
-  skippedCount,
+  runningCount,
   busy,
   onOpenChange,
   onConfirm
@@ -1593,7 +1665,7 @@ function DeleteFilteredDialog({
   open: boolean;
   totalCount: number;
   deletableCount: number;
-  skippedCount: number;
+  runningCount: number;
   busy: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
@@ -1608,7 +1680,7 @@ function DeleteFilteredDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-foreground">
-          This removes generated files and job metadata for the matching tasks. {skippedCount ? `${skippedCount.toLocaleString()} in-progress task${skippedCount === 1 ? "" : "s"} will be skipped.` : "This cannot be undone."}
+          This removes generated files and job metadata for the matching tasks. {runningCount ? `${runningCount.toLocaleString()} in-progress ${pluralize("task", runningCount)} will be canceled first.` : "This cannot be undone."}
         </div>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
@@ -1637,26 +1709,27 @@ function ReplaceFilteredDialog({
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
 }) {
-  const skippedCount = plan.runningTasks.length + plan.missingMediaTasks.length;
+  const actionCount = taskReplaceActionCount(plan);
+  const skippedCount = plan.missingMediaTasks.length;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Retry filtered tasks</DialogTitle>
           <DialogDescription>
-            {plan.candidates.length.toLocaleString()} of {plan.total.toLocaleString()} filtered task {pluralize("folder", plan.total)} will be deleted and queued again with the same task parameters.
+            {actionCount.toLocaleString()} of {plan.total.toLocaleString()} filtered task {pluralize("folder", plan.total)} will be deleted and queued again with the same task parameters.
           </DialogDescription>
         </DialogHeader>
         <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-foreground">
-          This removes generated files and job metadata before retrying tasks. {skippedCount ? `${skippedCount.toLocaleString()} filtered task${skippedCount === 1 ? "" : "s"} will be skipped because ${taskReplaceSkipReason(plan)}.` : "Library media files are not touched."}
+          This removes generated files and job metadata before retrying tasks. {plan.runningTasks.length ? `${plan.runningTasks.length.toLocaleString()} in-progress ${pluralize("task", plan.runningTasks.length)} will be canceled first.` : skippedCount ? `${skippedCount.toLocaleString()} filtered ${pluralize("task", skippedCount)} will be skipped because ${taskReplaceSkipReason(plan)}.` : "Library media files are not touched."}
         </div>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
             Keep tasks
           </Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={busy || plan.candidates.length === 0}>
+          <Button variant="destructive" onClick={onConfirm} disabled={busy || actionCount === 0}>
             {busy ? <Loader2 className="animate-spin" /> : <RotateCcw />}
-            Retry {plan.candidates.length.toLocaleString()}
+            Retry {actionCount.toLocaleString()}
           </Button>
         </div>
       </DialogContent>
@@ -1736,13 +1809,9 @@ function TaskDialog({
   const selectedExistingTasks = uniqueTasks(actionSelection?.existingTasks ?? []);
   const deleteActionItems = React.useMemo(() => (selection ? queueActionItems(selection, "delete") : []), [selection]);
   const deleteActionTasks = React.useMemo(() => existingTasksForMedia(deleteActionItems, selection?.existingTasks ?? []), [deleteActionItems, selection?.existingTasks]);
-  const deleteActionRunningTasks = deleteActionTasks.filter((task) => !canDeleteTask(task));
   const deleteActionTaskCount = deleteActionTasks.length;
-  const selectedRunningTasks = selectedExistingTasks.filter((task) => !canDeleteTask(task));
   const selectedExistingTaskCount = selectedExistingTasks.length;
   const existingTaskCount = queuePlan.existingTasks.length;
-  const blocksReplacement = queuePlan.runningTasks.length > 0;
-  const blocksDelete = selectedRunningTasks.length > 0;
   const queueCount = queuePlan.items.length;
   const hasActionSelection = !selection?.bulk || selectedActionItems.length > 0;
   const submit = () => {
@@ -1764,8 +1833,8 @@ function TaskDialog({
     }, queueCreateMode);
   };
   const actionDisabled = effectiveQueueMode === "delete"
-    ? busy || !hasActionSelection || selectedExistingTaskCount === 0 || blocksDelete
-    : busy || !hasActionSelection || blocksReplacement || queueCount === 0 || (!fast && !encoders.length);
+    ? busy || !hasActionSelection || selectedExistingTaskCount === 0
+    : busy || !hasActionSelection || queueCount === 0 || (!fast && !encoders.length);
 
   return (
     <Dialog open={!!selection} onOpenChange={onOpenChange}>
@@ -1798,7 +1867,7 @@ function TaskDialog({
                     Incomplete or missing
                   </Button>
                 </Tip>
-                <Tip content={deleteActionRunningTasks.length ? "Cancel in-progress tasks before deleting selected task folders" : "Delete selected media's existing task folders without queueing replacements. Library media files are not touched."}>
+                <Tip content="Delete selected media's existing task folders without queueing replacements. In-progress tasks will be canceled first. Library media files are not touched.">
                   <Button
                     type="button"
                     className="min-w-0"
@@ -1970,7 +2039,7 @@ function TaskDialog({
             <LabeledSlider label={`Audio ${audioKbps} kbps`} value={audioKbps} min={96} max={320} step={8} onChange={setAudioKbps} tip="Opus audio bitrate per output" />
           </div>
           {selection && (selection.bulk || existingTaskCount) ? (
-            <div className={cn("rounded-lg border p-3 text-sm text-foreground", existingTaskCount || blocksReplacement || effectiveQueueMode === "delete" ? "border-destructive/30 bg-destructive/10" : "bg-card/60")}>
+            <div className={cn("rounded-lg border p-3 text-sm text-foreground", existingTaskCount || queuePlan.runningTasks.length || effectiveQueueMode === "delete" ? "border-destructive/30 bg-destructive/10" : "bg-card/60")}>
               <div className="mb-1 flex items-center gap-2 font-medium">
                 {queueNoticeIcon(queuePlan, effectiveQueueMode)}
                 {queueNoticeTitle(queuePlan, effectiveQueueMode)}
@@ -2214,19 +2283,21 @@ function mediaForTask(task: TranscodeTask, index: CurrentMediaIndex) {
 function buildTaskReplacePlan(tasks: TranscodeTask[], index: CurrentMediaIndex): TaskReplacePlan {
   const plan: TaskReplacePlan = {
     candidates: [],
+    runningCandidates: [],
     runningTasks: [],
     missingMediaTasks: [],
     total: 0
   };
   for (const task of uniqueTasks(tasks)) {
     plan.total += 1;
-    if (!canDeleteTask(task)) {
-      plan.runningTasks.push(task);
-      continue;
-    }
     const item = mediaForTask(task, index);
     if (!item) {
       plan.missingMediaTasks.push(task);
+      continue;
+    }
+    if (!canDeleteTask(task)) {
+      plan.runningTasks.push(task);
+      plan.runningCandidates.push({ task, item });
       continue;
     }
     plan.candidates.push({ task, item });
@@ -2238,16 +2309,17 @@ function canQueueReplaceTask(task: TranscodeTask, index: CurrentMediaIndex) {
   return canDeleteTask(task) && Boolean(mediaForTask(task, index));
 }
 
+function canQueueReplaceTaskAfterCancel(task: TranscodeTask, index: CurrentMediaIndex) {
+  return Boolean(mediaForTask(task, index));
+}
+
 function taskReplaceButtonTip(task: TranscodeTask, index: CurrentMediaIndex, confirming: boolean) {
-  if (!canDeleteTask(task)) return "Cancel in-progress tasks before retrying";
   if (!mediaForTask(task, index)) return "Current media is unavailable; run a scan before retrying";
+  if (!canDeleteTask(task)) return confirming ? "Click once more to cancel this task, delete its folder, and retry it" : "Cancel this task, delete its folder, and queue it again";
   return confirming ? "Click once more to delete this task folder and retry it" : "Delete this task folder and queue it again with the same parameters";
 }
 
 function taskReplaceBlockedMessage(plan: TaskReplacePlan) {
-  if (plan.runningTasks.length && !plan.missingMediaTasks.length) {
-    return "No tasks retried. Cancel in-progress tasks before retrying.";
-  }
   if (plan.missingMediaTasks.length && !plan.runningTasks.length) {
     return "No tasks retried. Current media could not be matched; run a scan first.";
   }
@@ -2255,9 +2327,11 @@ function taskReplaceBlockedMessage(plan: TaskReplacePlan) {
 }
 
 function taskReplaceSkipReason(plan: TaskReplacePlan) {
-  if (plan.runningTasks.length && plan.missingMediaTasks.length) return "they are in progress or no current media match was found";
-  if (plan.runningTasks.length) return "they are in progress";
   return "no current media match was found";
+}
+
+function taskReplaceActionCount(plan: TaskReplacePlan) {
+  return plan.candidates.length + plan.runningCandidates.length;
 }
 
 function cloneTaskParams(params?: TaskParams): TaskParams {
@@ -2629,8 +2703,17 @@ function uniqueTasks(tasks: TranscodeTask[]) {
   return unique;
 }
 
+function latestTasksForIds(tasks: TranscodeTask[], latestTasks: TranscodeTask[]) {
+  const latestByID = new Map(latestTasks.map((task) => [task.id, task]));
+  return uniqueTasks(tasks).map((task) => latestByID.get(task.id) ?? task);
+}
+
 function uniqueIDs(ids: string[]) {
   return Array.from(new Set(ids));
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 }
 
 function toggleID(ids: string[], id: string) {
@@ -2879,7 +2962,7 @@ function queueNoticeIcon(plan: QueuePlan, queueMode: QueueMode) {
 }
 
 function queueNoticeTitle(plan: QueuePlan, queueMode: QueueMode) {
-  if (plan.runningTasks.length) return "Existing task output cannot be removed yet";
+  if (plan.runningTasks.length) return "In-progress tasks will be canceled first";
   if (queueMode === "delete" && plan.existingTasks.length) return "Existing task output will be removed";
   if (queueMode === "delete") return "No existing tasks to delete";
   if (plan.existingTasks.length) return "Existing task output will be removed";
@@ -2889,8 +2972,8 @@ function queueNoticeTitle(plan: QueuePlan, queueMode: QueueMode) {
 
 function queueConfirmationText(selection: TaskSelection, plan: QueuePlan, queueMode: QueueMode) {
   if (plan.runningTasks.length) {
-    const action = queueMode === "delete" ? "deleting task folders" : "queueing replacements";
-    return `${plan.runningTasks.length.toLocaleString()} existing task${plan.runningTasks.length === 1 ? " is" : "s are"} in progress and cannot be deleted yet. Cancel or wait for ${plan.runningTasks.length === 1 ? "it" : "them"} before ${action}.`;
+    const action = queueMode === "delete" ? "deleted" : "deleted before replacements are queued";
+    return `${plan.runningTasks.length.toLocaleString()} in-progress existing ${pluralize("task", plan.runningTasks.length)} will be canceled, then ${action}.`;
   }
   if (queueMode === "delete") {
     if (plan.existingTasks.length) {
