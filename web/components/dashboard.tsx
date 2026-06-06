@@ -90,6 +90,7 @@ type TriStateFilterState = "include" | "exclude";
 type TriStateFilters = Record<string, TriStateFilterState>;
 
 const IN_PROGRESS_FILTER = "In Progress";
+const COMPLETED_FILTER = "Completed";
 const NEW_VERSION_FILTER = "New Version";
 const STORYBOARDS_FILTER = "Storyboards";
 const LIVE_TASK_POLL_INTERVAL_MS = 30000;
@@ -139,7 +140,6 @@ export function Dashboard() {
   const [mediaLimit, setMediaLimit] = React.useState(150);
   const [taskLimit, setTaskLimit] = React.useState(100);
   const [taskQuery, setTaskQuery] = React.useState("");
-  const [taskCompletion, setTaskCompletion] = React.useState("all");
   const [taskStatusFilters, setTaskStatusFilters] = React.useState<TriStateFilters>({});
   const [codecFilters, setCodecFilters] = React.useState<TriStateFilters>({});
   const [subtitleFilters, setSubtitleFilters] = React.useState<TriStateFilters>({});
@@ -308,8 +308,8 @@ export function Dashboard() {
   const taskCodecOptions = React.useMemo(() => taskOptions(state.tasks, taskCodecs), [state.tasks]);
   const taskSubtitleOptions = React.useMemo(() => taskOptions(state.tasks, taskSubtitleLanguages), [state.tasks]);
   const filteredTasks = React.useMemo(
-    () => filterTasks(state.tasks, taskQuery, taskCompletion, taskStatusFilters, codecFilters, subtitleFilters, currentMediaIndex),
-    [codecFilters, currentMediaIndex, state.tasks, subtitleFilters, taskCompletion, taskQuery, taskStatusFilters]
+    () => filterTasks(state.tasks, taskQuery, taskStatusFilters, codecFilters, subtitleFilters, currentMediaIndex),
+    [codecFilters, currentMediaIndex, state.tasks, subtitleFilters, taskQuery, taskStatusFilters]
   );
   const visibleTasks = React.useMemo(() => filteredTasks.slice(0, taskLimit), [filteredTasks, taskLimit]);
   const runningFilteredTaskCount = React.useMemo(() => filteredTasks.filter(isInProgressTask).length, [filteredTasks]);
@@ -325,7 +325,7 @@ export function Dashboard() {
 
   React.useEffect(() => {
     setTaskLimit(100);
-  }, [codecFilters, subtitleFilters, taskCompletion, taskQuery, taskStatusFilters]);
+  }, [codecFilters, subtitleFilters, taskQuery, taskStatusFilters]);
 
   const startScan = async (force: boolean) => {
     setBusy(true);
@@ -720,8 +720,6 @@ export function Dashboard() {
               <TaskToolbar
                 query={taskQuery}
                 onQueryChange={setTaskQuery}
-                completion={taskCompletion}
-                onCompletionChange={setTaskCompletion}
                 taskStatusFilters={taskStatusFilters}
                 onTaskStatusFiltersChange={setTaskStatusFilters}
                 codecOptions={taskCodecOptions}
@@ -941,8 +939,6 @@ function ActiveTaskStrip({ tasks }: { tasks: TranscodeTask[] }) {
 function TaskToolbar({
   query,
   onQueryChange,
-  completion,
-  onCompletionChange,
   taskStatusFilters,
   onTaskStatusFiltersChange,
   codecOptions,
@@ -964,8 +960,6 @@ function TaskToolbar({
 }: {
   query: string;
   onQueryChange: (value: string) => void;
-  completion: string;
-  onCompletionChange: (value: string) => void;
   taskStatusFilters: TriStateFilters;
   onTaskStatusFiltersChange: (value: TriStateFilters) => void;
   codecOptions: string[];
@@ -985,7 +979,7 @@ function TaskToolbar({
   onReplaceFiltered: () => void;
   disabled: boolean;
 }) {
-  const hasFilters = query.trim() !== "" || completion !== "all" || hasTriStateFilters(taskStatusFilters) || hasTriStateFilters(codecFilters) || hasTriStateFilters(subtitleFilters);
+  const hasFilters = query.trim() !== "" || hasTriStateFilters(taskStatusFilters) || hasTriStateFilters(codecFilters) || hasTriStateFilters(subtitleFilters);
   return (
     <div className="mb-4 rounded-lg border bg-card/60 p-3">
       <div className="mb-3 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -1006,7 +1000,6 @@ function TaskToolbar({
                   className="h-7 px-2"
                   onClick={() => {
                     onQueryChange("");
-                    onCompletionChange("all");
                     onTaskStatusFiltersChange({});
                     onCodecFiltersChange({});
                     onSubtitleFiltersChange({});
@@ -1049,31 +1042,10 @@ function TaskToolbar({
           </Tip>
         </div>
       </div>
-      <div className="grid w-full gap-3 lg:grid-cols-[minmax(0,220px)_minmax(0,220px)_minmax(0,260px)_minmax(0,1fr)]">
-        <div>
-          <div className="mb-1 text-xs font-medium text-muted-foreground">Completion</div>
-          <div className="flex flex-wrap gap-2">
-            {[
-              ["all", "All"],
-              ["incomplete", "Incomplete"],
-              ["complete", "Completed"]
-            ].map(([value, label]) => (
-              <Button
-                key={value}
-                type="button"
-                variant={completion === value ? "default" : "outline"}
-                size="sm"
-                className="h-7"
-                onClick={() => onCompletionChange(value)}
-              >
-                {label}
-              </Button>
-            ))}
-          </div>
-        </div>
+      <div className="grid w-full gap-3 lg:grid-cols-[minmax(0,260px)_minmax(0,260px)_minmax(0,1fr)]">
         <TriStateFilterGroup
           title="Task Status"
-          options={[IN_PROGRESS_FILTER, NEW_VERSION_FILTER, STORYBOARDS_FILTER]}
+          options={[IN_PROGRESS_FILTER, COMPLETED_FILTER, NEW_VERSION_FILTER, STORYBOARDS_FILTER]}
           filters={taskStatusFilters}
           onChange={onTaskStatusFiltersChange}
           emptyLabel="No task status options"
@@ -2402,7 +2374,6 @@ function taskOptions(tasks: TranscodeTask[], getValues: (task: TranscodeTask) =>
 function filterTasks(
   tasks: TranscodeTask[],
   query: string,
-  completion: string,
   taskStatusFilters: TriStateFilters,
   codecFilters: TriStateFilters,
   subtitleFilters: TriStateFilters,
@@ -2411,8 +2382,6 @@ function filterTasks(
   return tasks.filter((task) => {
     if (!taskMatchesQuery(task, query)) return false;
     if (!taskMatchesStatusFilters(task, taskStatusFilters, currentMediaIndex)) return false;
-    if (completion === "complete" && task.state !== "complete") return false;
-    if (completion === "incomplete" && task.state === "complete") return false;
     const codecs = taskCodecs(task);
     if (!taskMatchesCodecFilters(codecs, codecFilters)) return false;
     const subtitles = taskSubtitleLanguages(task);
@@ -2439,10 +2408,13 @@ function taskMatchesStatusFilters(task: TranscodeTask, filters: TriStateFilters,
   const included = triStateFiltersByState(filters, "include");
   const excluded = triStateFiltersByState(filters, "exclude");
   const inProgress = isInProgressTask(task);
+  const completed = task.state === "complete";
   const newVersion = taskHasNewVersion(task, currentMediaIndex);
   const hasStoryboards = taskHasStoryboards(task);
   if (included.includes(IN_PROGRESS_FILTER) && !inProgress) return false;
   if (excluded.includes(IN_PROGRESS_FILTER) && inProgress) return false;
+  if (included.includes(COMPLETED_FILTER) && !completed) return false;
+  if (excluded.includes(COMPLETED_FILTER) && completed) return false;
   if (included.includes(NEW_VERSION_FILTER) && !newVersion) return false;
   if (excluded.includes(NEW_VERSION_FILTER) && newVersion) return false;
   if (included.includes(STORYBOARDS_FILTER) && !hasStoryboards) return false;
