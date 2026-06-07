@@ -1728,8 +1728,8 @@ function TaskDialog({
   const [enableEncode, setEnableEncode] = React.useState(true);
   const [enableSprites, setEnableSprites] = React.useState(true);
   const [extractStreams, setExtractStreams] = React.useState(true);
-  const [encoders, setEncoders] = React.useState<string[]>(["hevc"]);
-  const [quality, setQuality] = React.useState(18);
+  const [encoders, setEncoders] = React.useState<string[]>(["av1"]);
+  const [quality, setQuality] = React.useState(20);
   const [audioKbps, setAudioKbps] = React.useState(144);
   const [queueMode, setQueueMode] = React.useState<QueueMode>("replace");
   const [mediaFilter, setMediaFilter] = React.useState("");
@@ -1740,8 +1740,8 @@ function TaskDialog({
     if (!config) return;
     setEnableEncode(config.enableEncode);
     setEnableSprites(config.enableSprite);
-    setEncoders(config.encoders?.length ? config.encoders : ["hevc"]);
-    setQuality(Number(config.quality || 18));
+    setEncoders(config.encoders?.length ? config.encoders : ["av1"]);
+    setQuality(Number(config.quality || 20));
     setAudioKbps(config.audioKbps || 144);
   }, [config, selection?.items[0]?.id]);
 
@@ -1749,7 +1749,7 @@ function TaskDialog({
     setQueueMode("replace");
   }, [selection?.items[0]?.id]);
 
-  const allEncoders = ["hevc", "av1", "h264-10bit", "h264-8bit"];
+  const allEncoders = ["av1", "hevc", "h264-10bit", "h264-8bit"];
   const isBulkSelection = Boolean(selection?.bulk);
   const effectiveQueueMode: QueueMode = selection?.bulk ? queueMode : "replace";
   const queueCreateMode: QueueCreateMode = effectiveQueueMode === "incomplete" ? "incomplete" : "replace";

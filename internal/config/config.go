@@ -28,9 +28,9 @@ type Config struct {
 	MKVExtract   string `env:"MKVEXTRACT" envDefault:"mkvextract"`
 	HandbrakeCli string `env:"HANDBRAKE_CLI" envDefault:"HandBrakeCLI"`
 
-	ConstantQuality  string `env:"CONSTANT_QUALITY" envDefault:"18"`
+	ConstantQuality  string `env:"CONSTANT_QUALITY" envDefault:"20"`
 	VideoExt         string `env:"VIDEO_EXT" envDefault:"mp4"`
-	Encoder          string `env:"ENCODER" envDefault:"av1,hevc"`
+	Encoder          string `env:"ENCODER" envDefault:"av1"`
 	AudioKbps        int    `env:"AUDIO_KBPS" envDefault:"144"`
 	Av1Encoder       string `env:"SVT_AV1_ENCODER" envDefault:"svt_av1_10bit"`
 	Av1Preset        string `env:"AV1_PRESET" envDefault:"4"`
