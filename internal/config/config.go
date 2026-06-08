@@ -45,7 +45,7 @@ type Config struct {
 
 	ThumbnailHeight        int `env:"THUMBNAIL_HEIGHT" envDefault:"180"`
 	ThumbnailInterval      int `env:"THUMBNAIL_INTERVAL" envDefault:"3"`
-	ThumbnailChunkInterval int `env:"THUMBNAIL_CHUNK_INTERVAL" envDefault:"1152"`
+	ThumbnailChunkInterval int `env:"THUMBNAIL_CHUNK_INTERVAL" envDefault:"1200"`
 
 	EnableEncode      bool `env:"ENABLE_ENCODE" envDefault:"true"`
 	EnableSprite      bool `env:"ENABLE_SPRITE" envDefault:"true"`

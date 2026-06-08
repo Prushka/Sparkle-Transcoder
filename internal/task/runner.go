@@ -502,7 +502,7 @@ func (r *Runner) generateSprites(ctx context.Context, task *Task, videoFile stri
 	if thumbnailHeight <= 0 || thumbnailInterval <= 0 || chunkInterval <= 0 {
 		return nil
 	}
-	numThumbnailsPerChunk := chunkInterval / thumbnailInterval
+	numThumbnailsPerChunk := int(math.Ceil(float64(chunkInterval) / float64(thumbnailInterval)))
 	if numThumbnailsPerChunk <= 0 {
 		return nil
 	}
@@ -510,30 +510,35 @@ func (r *Runner) generateSprites(ctx context.Context, task *Task, videoFile stri
 	aspectRatio := float64(task.Width) / float64(task.Height)
 	thumbnailWidth := int(math.Round(float64(thumbnailHeight) * aspectRatio))
 	gridSize := int(math.Ceil(math.Sqrt(float64(numThumbnailsPerChunk))))
-	vtt := "WEBVTT\n\n"
+	var vtt strings.Builder
+	vtt.WriteString("WEBVTT\n\n")
 	g, ctx := errgroup.WithContext(ctx)
 	for i := 0; i < numChunks; i++ {
 		i := i
 		g.Go(func() error {
 			chunkStartTime := i * chunkInterval
+			chunkDuration := math.Min(float64(chunkInterval), task.Duration-float64(chunkStartTime))
 			spriteFile := r.outputJoin(task, fmt.Sprintf("%s_%d%s", spritePrefix, i+1, spriteExt))
-			_, err := r.exec.Run(ctx, r.cfg.Ffmpeg, "-y", "-i", videoFile, "-ss", fmt.Sprintf("%d", chunkStartTime), "-t", fmt.Sprintf("%d", chunkInterval), "-vf", fmt.Sprintf("fps=1/%d,scale=%d:%d,tile=%dx%d", thumbnailInterval, thumbnailWidth, thumbnailHeight, gridSize, gridSize), spriteFile)
+			_, err := r.exec.Run(ctx, r.cfg.Ffmpeg, "-y", "-ss", fmt.Sprintf("%d", chunkStartTime), "-t", formatFFmpegSeconds(chunkDuration), "-i", videoFile, "-vf", fmt.Sprintf("setpts=PTS-STARTPTS,fps=1/%d:start_time=0:eof_action=pass,scale=%d:%d,tile=%dx%d:nb_frames=%d,format=yuvj420p", thumbnailInterval, thumbnailWidth, thumbnailHeight, gridSize, gridSize, numThumbnailsPerChunk), "-frames:v", "1", spriteFile)
 			return err
 		})
 		for j := 0; j < numThumbnailsPerChunk; j++ {
-			thumbnailTime := i*chunkInterval + j*thumbnailInterval
+			thumbnailTime := float64(i*chunkInterval + j*thumbnailInterval)
+			if thumbnailTime >= task.Duration {
+				break
+			}
 			start := formatVTTTime(thumbnailTime)
-			end := formatVTTTime(thumbnailTime + thumbnailInterval)
+			end := formatVTTTime(math.Min(thumbnailTime+float64(thumbnailInterval), task.Duration))
 			row := j / gridSize
 			col := j % gridSize
 			coords := fmt.Sprintf("%d,%d,%d,%d", col*thumbnailWidth, row*thumbnailHeight, thumbnailWidth, thumbnailHeight)
-			vtt += fmt.Sprintf("%s --> %s\n%s_%d%s#xywh=%s\n\n", start, end, spritePrefix, i+1, spriteExt, coords)
+			vtt.WriteString(fmt.Sprintf("%s --> %s\n%s_%d%s#xywh=%s\n\n", start, end, spritePrefix, i+1, spriteExt, coords))
 		}
 	}
 	if err := g.Wait(); err != nil {
 		return err
 	}
-	return os.WriteFile(r.outputJoin(task, ThumbnailVTT), []byte(vtt), 0644)
+	return os.WriteFile(r.outputJoin(task, ThumbnailVTT), []byte(vtt.String()), 0644)
 }
 
 func parseProbeDimensions(out []byte) (int, int, bool) {
@@ -780,9 +785,20 @@ func appendUnique(values []string, value string) []string {
 	return append(values, value)
 }
 
-func formatVTTTime(seconds int) string {
-	hour := seconds / 3600
-	minute := (seconds % 3600) / 60
-	second := seconds % 60
-	return fmt.Sprintf("%02d:%02d:%02d.000", hour, minute, second)
+func formatFFmpegSeconds(seconds float64) string {
+	return strconv.FormatFloat(seconds, 'f', 3, 64)
+}
+
+func formatVTTTime(seconds float64) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	milliseconds := int(math.Round(seconds * 1000))
+	hour := milliseconds / 3600000
+	milliseconds %= 3600000
+	minute := milliseconds / 60000
+	milliseconds %= 60000
+	second := milliseconds / 1000
+	millisecond := milliseconds % 1000
+	return fmt.Sprintf("%02d:%02d:%02d.%03d", hour, minute, second, millisecond)
 }
