@@ -192,6 +192,25 @@ func TestCreateHonorsExplicitExtractStreamsFalse(t *testing.T) {
 	}
 }
 
+func TestReserveTaskDirGeneratesTenCharacterID(t *testing.T) {
+	output := t.TempDir()
+	store := &Store{cfg: &config.Config{Output: output}}
+
+	id, dir, err := store.reserveTaskDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(id) != generatedTaskIDLength {
+		t.Fatalf("id length = %d, want %d: %q", len(id), generatedTaskIDLength, id)
+	}
+	if filepath.Base(dir) != id {
+		t.Fatalf("dir = %q, want basename %q", dir, id)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("reserved dir was not created: %v", err)
+	}
+}
+
 func TestWorkerUpdatesListCacheAfterRun(t *testing.T) {
 	output := t.TempDir()
 	input := filepath.Join(t.TempDir(), "Movies", "Example", "Example.mkv")

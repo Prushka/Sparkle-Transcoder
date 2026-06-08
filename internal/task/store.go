@@ -47,6 +47,8 @@ type queuedTaskCandidate struct {
 var ErrTaskRunning = errors.New("task is running; cancel it before deleting")
 var ErrTaskActive = errors.New("task is already queued or running")
 
+const generatedTaskIDLength = 10
+
 func NewStore(cfg *config.Config, scanner *media.Scanner, runner *Runner) *Store {
 	return NewStoreWithContext(context.Background(), cfg, scanner, runner)
 }
@@ -956,7 +958,7 @@ func (s *Store) reserveTaskDir() (string, string, error) {
 		return "", "", err
 	}
 	for {
-		id := randomID(5)
+		id := randomID(generatedTaskIDLength)
 		dir := filepath.Join(s.cfg.Output, id)
 		if err := os.Mkdir(dir, 0755); err != nil {
 			if os.IsExist(err) {
