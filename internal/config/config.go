@@ -43,9 +43,9 @@ type Config struct {
 	H2648BitProfile  string `env:"H264_PROFILE" envDefault:"baseline"`
 	H2648BitTune     string `env:"H264_TUNE" envDefault:"fastdecode"`
 
-	ThumbnailHeight        int `env:"THUMBNAIL_HEIGHT" envDefault:"180"`
-	ThumbnailInterval      int `env:"THUMBNAIL_INTERVAL" envDefault:"3"`
-	ThumbnailChunkInterval int `env:"THUMBNAIL_CHUNK_INTERVAL" envDefault:"1200"`
+	ThumbnailHeight        int `env:"THUMBNAIL_HEIGHT" envDefault:"200"`
+	ThumbnailInterval      int `env:"THUMBNAIL_INTERVAL" envDefault:"2"`
+	ThumbnailChunkInterval int `env:"THUMBNAIL_CHUNK_INTERVAL" envDefault:"800"`
 
 	EnableEncode      bool `env:"ENABLE_ENCODE" envDefault:"true"`
 	EnableSprite      bool `env:"ENABLE_SPRITE" envDefault:"true"`

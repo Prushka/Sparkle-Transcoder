@@ -18,13 +18,13 @@ func TestGenerateSpritesSeeksBeforeFilteringAndCapsVTT(t *testing.T) {
 	exec := &spriteRecordingExec{}
 	runner := NewRunner(&config.Config{
 		Ffmpeg:                 "ffmpeg",
-		ThumbnailHeight:        180,
-		ThumbnailInterval:      3,
-		ThumbnailChunkInterval: 1200,
+		ThumbnailHeight:        200,
+		ThumbnailInterval:      2,
+		ThumbnailChunkInterval: 800,
 	}, nil, exec)
 	task := &Task{
 		OutputDir: outputDir,
-		Duration:  1201.25,
+		Duration:  801.25,
 		Width:     1920,
 		Height:    1080,
 	}
@@ -41,11 +41,11 @@ func TestGenerateSpritesSeeksBeforeFilteringAndCapsVTT(t *testing.T) {
 		t.Fatalf("ffmpeg calls = %d, want 2: %+v", len(calls), calls)
 	}
 
-	wantFirst := []string{"-y", "-ss", "0", "-t", "1200.000", "-i", "video.mp4", "-vf", "setpts=PTS-STARTPTS,fps=1/3:start_time=0:eof_action=pass,scale=320:180,tile=20x20:nb_frames=400,format=yuvj420p", "-frames:v", "1", filepath.Join(outputDir, "sp_1.jpg")}
+	wantFirst := []string{"-y", "-ss", "0", "-t", "800.000", "-i", "video.mp4", "-vf", "setpts=PTS-STARTPTS,fps=1/2:start_time=0:eof_action=pass,scale=356:200,tile=20x20:nb_frames=400,format=yuvj420p", "-frames:v", "1", filepath.Join(outputDir, "sp_1.jpg")}
 	if !reflect.DeepEqual(calls[0].args, wantFirst) {
 		t.Fatalf("first sprite args = %+v, want %+v", calls[0].args, wantFirst)
 	}
-	wantSecond := []string{"-y", "-ss", "1200", "-t", "1.250", "-i", "video.mp4", "-vf", "setpts=PTS-STARTPTS,fps=1/3:start_time=0:eof_action=pass,scale=320:180,tile=20x20:nb_frames=400,format=yuvj420p", "-frames:v", "1", filepath.Join(outputDir, "sp_2.jpg")}
+	wantSecond := []string{"-y", "-ss", "800", "-t", "1.250", "-i", "video.mp4", "-vf", "setpts=PTS-STARTPTS,fps=1/2:start_time=0:eof_action=pass,scale=356:200,tile=20x20:nb_frames=400,format=yuvj420p", "-frames:v", "1", filepath.Join(outputDir, "sp_2.jpg")}
 	if !reflect.DeepEqual(calls[1].args, wantSecond) {
 		t.Fatalf("second sprite args = %+v, want %+v", calls[1].args, wantSecond)
 	}
@@ -57,10 +57,10 @@ func TestGenerateSpritesSeeksBeforeFilteringAndCapsVTT(t *testing.T) {
 	if got := strings.Count(vtt, "sp_2.jpg#xywh="); got != 1 {
 		t.Fatalf("sp_2 refs = %d, want 1", got)
 	}
-	if !strings.Contains(vtt, "00:20:00.000 --> 00:20:01.250\nsp_2.jpg#xywh=0,0,320,180") {
+	if !strings.Contains(vtt, "00:13:20.000 --> 00:13:21.250\nsp_2.jpg#xywh=0,0,356,200") {
 		t.Fatalf("vtt missing capped final cue:\n%s", vtt)
 	}
-	if strings.Contains(vtt, "00:20:03.000") {
+	if strings.Contains(vtt, "00:13:22.000") {
 		t.Fatalf("vtt includes a cue past the media duration:\n%s", vtt)
 	}
 }
