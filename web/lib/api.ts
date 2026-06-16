@@ -69,6 +69,7 @@ export type PublicConfig = {
   audioKbps: number;
   enableEncode: boolean;
   enableSprite: boolean;
+  copySubtitleSidecars: boolean;
 };
 
 export type ToolReadiness = {
@@ -87,6 +88,7 @@ export type TaskParams = {
   enableEncode?: boolean;
   enableSprites?: boolean;
   requireSubtitles?: boolean;
+  copySubtitleSidecars?: boolean;
   encoders?: string[];
   videoExt?: string;
   quality?: string;

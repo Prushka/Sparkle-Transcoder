@@ -95,6 +95,8 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 				return err
 			}
 		}
+	}
+	if task.Params.CopySubtitleSidecars == nil || *task.Params.CopySubtitleSidecars {
 		if err := r.extractExternalSubtitles(ctx, task); err != nil {
 			return err
 		}
@@ -378,7 +380,7 @@ func (r *Runner) extractOneStream(ctx context.Context, task *Task, source string
 }
 
 func (r *Runner) extractExternalSubtitles(ctx context.Context, task *Task) error {
-	if task.MediaID == "" {
+	if task.MediaID == "" || r.scanner == nil {
 		return nil
 	}
 	item, ok := r.scanner.Get(task.MediaID)

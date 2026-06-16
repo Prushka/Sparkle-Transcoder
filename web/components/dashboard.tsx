@@ -1738,6 +1738,7 @@ function TaskDialog({
   const [enableSprites, setEnableSprites] = React.useState(true);
   const [requireSubtitles, setRequireSubtitles] = React.useState(true);
   const [extractStreams, setExtractStreams] = React.useState(true);
+  const [copySubtitleSidecars, setCopySubtitleSidecars] = React.useState(true);
   const [encoders, setEncoders] = React.useState<string[]>(["av1"]);
   const [quality, setQuality] = React.useState(20);
   const [audioKbps, setAudioKbps] = React.useState(144);
@@ -1751,6 +1752,7 @@ function TaskDialog({
     setEnableEncode(config.enableEncode);
     setEnableSprites(config.enableSprite);
     setRequireSubtitles(true);
+    setCopySubtitleSidecars(config.copySubtitleSidecars);
     setEncoders(config.encoders?.length ? config.encoders : ["av1"]);
     setQuality(Number(config.quality || 20));
     setAudioKbps(config.audioKbps || 144);
@@ -1810,6 +1812,7 @@ function TaskDialog({
       enableSprites,
       requireSubtitles,
       extractStreams,
+      copySubtitleSidecars,
       encoders,
       quality: String(quality),
       audioKbps,
@@ -1992,6 +1995,9 @@ function TaskDialog({
               <Subtitles className="size-4 text-primary" />
             </ToggleLine>
             <ToggleLine label="Extract streams" checked={extractStreams} onCheckedChange={setExtractStreams} tip="Extract subtitle, attachment, and audio streams">
+              <Subtitles className="size-4 text-primary" />
+            </ToggleLine>
+            <ToggleLine label="Subtitle sidecars" checked={copySubtitleSidecars} onCheckedChange={setCopySubtitleSidecars} tip="Copy matching external subtitle files into the task folder">
               <Subtitles className="size-4 text-primary" />
             </ToggleLine>
             <ToggleLine label="Sprites" checked={enableSprites} onCheckedChange={setEnableSprites} tip="Generate storyboard thumbnail sheets">
@@ -2322,10 +2328,11 @@ function taskReplaceActionCount(plan: TaskReplacePlan) {
 }
 
 function cloneTaskParams(params?: TaskParams): TaskParams {
-  const source = params ?? { fast: false, extractStreams: true };
+  const source = params ?? { fast: false, extractStreams: true, copySubtitleSidecars: true };
   return {
     ...source,
     extractStreams: source.extractStreams ?? true,
+    copySubtitleSidecars: source.copySubtitleSidecars ?? true,
     encoders: source.encoders ? [...source.encoders] : undefined
   };
 }

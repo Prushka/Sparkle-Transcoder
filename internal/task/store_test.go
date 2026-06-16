@@ -44,6 +44,9 @@ func TestListReadsLegacyJobJSON(t *testing.T) {
 	if got.Params.ExtractStreams == nil || !*got.Params.ExtractStreams {
 		t.Fatalf("legacy extract streams = %+v, want true", got.Params.ExtractStreams)
 	}
+	if got.Params.CopySubtitleSidecars == nil || !*got.Params.CopySubtitleSidecars {
+		t.Fatalf("legacy copy subtitle sidecars = %+v, want true", got.Params.CopySubtitleSidecars)
+	}
 	if len(got.EncodedCodecs) != 1 || got.EncodedCodecs[0] != "hevc" {
 		t.Fatalf("encoded codecs = %+v", got.EncodedCodecs)
 	}
@@ -60,6 +63,9 @@ func TestDecodeNewTaskJSON(t *testing.T) {
 	}
 	if got.Params.ExtractStreams == nil || !*got.Params.ExtractStreams {
 		t.Fatalf("extract streams = %+v, want true", got.Params.ExtractStreams)
+	}
+	if got.Params.CopySubtitleSidecars == nil || !*got.Params.CopySubtitleSidecars {
+		t.Fatalf("copy subtitle sidecars = %+v, want true", got.Params.CopySubtitleSidecars)
 	}
 }
 
@@ -189,6 +195,109 @@ func TestCreateHonorsExplicitExtractStreamsFalse(t *testing.T) {
 	}
 	if task.Params.ExtractStreams == nil || *task.Params.ExtractStreams {
 		t.Fatalf("extract streams = %+v, want false", task.Params.ExtractStreams)
+	}
+}
+
+func TestCreateDefaultsCopySubtitleSidecarsOnFromConfig(t *testing.T) {
+	root := t.TempDir()
+	output := t.TempDir()
+	input := filepath.Join(root, "Movies", "Example", "Example.mkv")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{
+		cfg: &config.Config{
+			MediaRoot:            root,
+			Output:               output,
+			EnableEncode:         true,
+			EnableSprite:         true,
+			CopySubtitleSidecars: true,
+			VideoExt:             "mp4",
+			ConstantQuality:      "18",
+			AudioKbps:            144,
+			Encoder:              "hevc",
+		},
+		queue:   make(chan string, 1),
+		cancels: map[string]context.CancelFunc{},
+	}
+	task, err := store.Create(context.Background(), testItem(input), Params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Params.CopySubtitleSidecars == nil || !*task.Params.CopySubtitleSidecars {
+		t.Fatalf("copy subtitle sidecars = %+v, want true", task.Params.CopySubtitleSidecars)
+	}
+}
+
+func TestCreateDefaultsCopySubtitleSidecarsOffFromConfig(t *testing.T) {
+	root := t.TempDir()
+	output := t.TempDir()
+	input := filepath.Join(root, "Movies", "Example", "Example.mkv")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{
+		cfg: &config.Config{
+			MediaRoot:            root,
+			Output:               output,
+			EnableEncode:         true,
+			EnableSprite:         true,
+			CopySubtitleSidecars: false,
+			VideoExt:             "mp4",
+			ConstantQuality:      "18",
+			AudioKbps:            144,
+			Encoder:              "hevc",
+		},
+		queue:   make(chan string, 1),
+		cancels: map[string]context.CancelFunc{},
+	}
+	task, err := store.Create(context.Background(), testItem(input), Params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Params.CopySubtitleSidecars == nil || *task.Params.CopySubtitleSidecars {
+		t.Fatalf("copy subtitle sidecars = %+v, want false", task.Params.CopySubtitleSidecars)
+	}
+}
+
+func TestCreateHonorsExplicitCopySubtitleSidecarsFalse(t *testing.T) {
+	root := t.TempDir()
+	output := t.TempDir()
+	input := filepath.Join(root, "Movies", "Example", "Example.mkv")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	copySubtitleSidecars := false
+	store := &Store{
+		cfg: &config.Config{
+			MediaRoot:            root,
+			Output:               output,
+			EnableEncode:         true,
+			EnableSprite:         true,
+			CopySubtitleSidecars: true,
+			VideoExt:             "mp4",
+			ConstantQuality:      "18",
+			AudioKbps:            144,
+			Encoder:              "hevc",
+		},
+		queue:   make(chan string, 1),
+		cancels: map[string]context.CancelFunc{},
+	}
+	task, err := store.Create(context.Background(), testItem(input), Params{CopySubtitleSidecars: &copySubtitleSidecars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Params.CopySubtitleSidecars == nil || *task.Params.CopySubtitleSidecars {
+		t.Fatalf("copy subtitle sidecars = %+v, want false", task.Params.CopySubtitleSidecars)
 	}
 }
 
@@ -599,6 +708,155 @@ func TestRunnerFailsWhenRequiredSubtitlesMissing(t *testing.T) {
 	}
 	if task.State != StateIncomplete {
 		t.Fatalf("task state = %s, want %s before failure", task.State, StateIncomplete)
+	}
+}
+
+func TestRunnerSkipsExternalSubtitlesWhenCopySubtitleSidecarsDisabled(t *testing.T) {
+	root := t.TempDir()
+	output := t.TempDir()
+	input := filepath.Join(root, "Movies", "Example", "Example.mkv")
+	sidecar := filepath.Join(root, "Movies", "Example", "Example.en.srt")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sidecar, []byte("subtitle"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		MediaRoot:            root,
+		Output:               output,
+		ScanCacheFile:        filepath.Join(t.TempDir(), "scan-cache.json"),
+		Ffprobe:              "ffprobe",
+		Ffmpeg:               "ffmpeg",
+		EnableEncode:         false,
+		EnableSprite:         false,
+		CopySubtitleSidecars: true,
+		VideoExt:             "mp4",
+		AudioKbps:            144,
+	}
+	scanner := media.NewScanner(cfg)
+	idx, err := scanner.Scan(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var item media.Item
+	for _, scanned := range idx.Items {
+		item = scanned
+	}
+	if len(item.Subtitles) != 1 {
+		t.Fatalf("scanner subtitles = %+v, want one sidecar", item.Subtitles)
+	}
+	enableEncode := false
+	enableSprites := false
+	requireSubtitles := false
+	extractStreams := false
+	copySubtitleSidecars := false
+	task := &Task{
+		ID:           "abc12",
+		MediaID:      item.ID,
+		InputPath:    input,
+		InputRelPath: item.RelPath,
+		Input:        filepath.Base(input),
+		OutputDir:    filepath.Join(output, "abc12"),
+		State:        StateQueued,
+		Params: Params{
+			EnableEncode:         &enableEncode,
+			EnableSprites:        &enableSprites,
+			RequireSubtitles:     &requireSubtitles,
+			ExtractStreams:       &extractStreams,
+			CopySubtitleSidecars: &copySubtitleSidecars,
+			VideoExt:             "mp4",
+			AudioKbps:            144,
+		},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	runner := NewRunner(cfg, scanner, fakeExec{})
+
+	if err := runner.Run(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if len(task.Streams) != 0 {
+		t.Fatalf("streams = %+v, want no copied subtitle sidecars", task.Streams)
+	}
+	if _, err := os.Stat(filepath.Join(task.OutputDir, "Example.en.srt")); !os.IsNotExist(err) {
+		t.Fatalf("sidecar copy stat error = %v, want not exist", err)
+	}
+}
+
+func TestRunnerCopiesExternalSubtitlesWhenCopySubtitleSidecarsEnabled(t *testing.T) {
+	root := t.TempDir()
+	output := t.TempDir()
+	input := filepath.Join(root, "Movies", "Example", "Example.mkv")
+	sidecar := filepath.Join(root, "Movies", "Example", "Example.en.vtt")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sidecar, []byte("WEBVTT\n\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		MediaRoot:     root,
+		Output:        output,
+		ScanCacheFile: filepath.Join(t.TempDir(), "scan-cache.json"),
+		Ffprobe:       "ffprobe",
+		Ffmpeg:        "ffmpeg",
+		EnableEncode:  false,
+		EnableSprite:  false,
+		VideoExt:      "mp4",
+		AudioKbps:     144,
+	}
+	scanner := media.NewScanner(cfg)
+	idx, err := scanner.Scan(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var item media.Item
+	for _, scanned := range idx.Items {
+		item = scanned
+	}
+	if len(item.Subtitles) != 1 {
+		t.Fatalf("scanner subtitles = %+v, want one sidecar", item.Subtitles)
+	}
+	enableEncode := false
+	enableSprites := false
+	requireSubtitles := false
+	extractStreams := false
+	task := &Task{
+		ID:           "abc12",
+		MediaID:      item.ID,
+		InputPath:    input,
+		InputRelPath: item.RelPath,
+		Input:        filepath.Base(input),
+		OutputDir:    filepath.Join(output, "abc12"),
+		State:        StateQueued,
+		Params: Params{
+			EnableEncode:     &enableEncode,
+			EnableSprites:    &enableSprites,
+			RequireSubtitles: &requireSubtitles,
+			ExtractStreams:   &extractStreams,
+			VideoExt:         "mp4",
+			AudioKbps:        144,
+		},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	runner := NewRunner(cfg, scanner, fakeExec{})
+
+	if err := runner.Run(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if len(task.Streams) != 1 || task.Streams[0].Location != "Example.en.vtt" || task.Streams[0].Language != "en" {
+		t.Fatalf("streams = %+v, want copied vtt sidecar stream", task.Streams)
+	}
+	if _, err := os.Stat(filepath.Join(task.OutputDir, "Example.en.vtt")); err != nil {
+		t.Fatalf("copied sidecar missing: %v", err)
 	}
 }
 

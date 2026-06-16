@@ -20,15 +20,16 @@ const (
 )
 
 type Params struct {
-	Fast             bool     `json:"fast"`
-	EnableEncode     *bool    `json:"enableEncode,omitempty"`
-	EnableSprites    *bool    `json:"enableSprites,omitempty"`
-	RequireSubtitles *bool    `json:"requireSubtitles,omitempty"`
-	Encoders         []string `json:"encoders,omitempty"`
-	VideoExt         string   `json:"videoExt,omitempty"`
-	Quality          string   `json:"quality,omitempty"`
-	AudioKbps        int      `json:"audioKbps,omitempty"`
-	ExtractStreams   *bool    `json:"extractStreams,omitempty"`
+	Fast                 bool     `json:"fast"`
+	EnableEncode         *bool    `json:"enableEncode,omitempty"`
+	EnableSprites        *bool    `json:"enableSprites,omitempty"`
+	RequireSubtitles     *bool    `json:"requireSubtitles,omitempty"`
+	Encoders             []string `json:"encoders,omitempty"`
+	VideoExt             string   `json:"videoExt,omitempty"`
+	Quality              string   `json:"quality,omitempty"`
+	AudioKbps            int      `json:"audioKbps,omitempty"`
+	ExtractStreams       *bool    `json:"extractStreams,omitempty"`
+	CopySubtitleSidecars *bool    `json:"copySubtitleSidecars,omitempty"`
 }
 
 type Task struct {

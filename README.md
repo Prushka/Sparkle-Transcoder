@@ -38,6 +38,7 @@ Default paths:
 - `MEDIA_ROOT=O:\Managed-Videos`
 - `OUTPUT=O:\Managed-Videos\Public\output`
 - `SCAN_INCREMENTAL=true`
+- `COPY_SUBTITLE_SIDECARS=true`
 - `API_ADDR=:1323`
 
 Core endpoints:

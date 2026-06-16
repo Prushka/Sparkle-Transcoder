@@ -259,6 +259,10 @@ func (s *Store) Create(ctx context.Context, item media.Item, params Params) (*Ta
 		extractStreams := true
 		params.ExtractStreams = &extractStreams
 	}
+	if params.CopySubtitleSidecars == nil {
+		copySubtitleSidecars := defaultCopySubtitleSidecars(s.cfg)
+		params.CopySubtitleSidecars = &copySubtitleSidecars
+	}
 	if params.RequireSubtitles == nil {
 		requireSubtitles := true
 		params.RequireSubtitles = &requireSubtitles
@@ -849,7 +853,29 @@ func decodeTask(content []byte) (*Task, error) {
 	if err := json.Unmarshal(content, task); err != nil {
 		return nil, err
 	}
+	defaultTaskParamPointers(task)
 	return task, nil
+}
+
+func defaultTaskParamPointers(task *Task) {
+	if task == nil {
+		return
+	}
+	if task.Params.ExtractStreams == nil {
+		extractStreams := true
+		task.Params.ExtractStreams = &extractStreams
+	}
+	if task.Params.CopySubtitleSidecars == nil {
+		copySubtitleSidecars := true
+		task.Params.CopySubtitleSidecars = &copySubtitleSidecars
+	}
+}
+
+func defaultCopySubtitleSidecars(cfg *config.Config) bool {
+	if cfg == nil {
+		return true
+	}
+	return cfg.CopySubtitleSidecars
 }
 
 func decodeLegacyTask(content []byte) (*Task, error) {
@@ -893,6 +919,8 @@ func decodeLegacyTask(content []byte) (*Task, error) {
 	task.Params.Fast = legacy.Fast
 	extractStreams := true
 	task.Params.ExtractStreams = &extractStreams
+	copySubtitleSidecars := true
+	task.Params.CopySubtitleSidecars = &copySubtitleSidecars
 	requireSubtitles := false
 	task.Params.RequireSubtitles = &requireSubtitles
 	task.Legacy = true

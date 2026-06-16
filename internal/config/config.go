@@ -47,11 +47,12 @@ type Config struct {
 	ThumbnailInterval      int `env:"THUMBNAIL_INTERVAL" envDefault:"2"`
 	ThumbnailChunkInterval int `env:"THUMBNAIL_CHUNK_INTERVAL" envDefault:"800"`
 
-	EnableEncode      bool `env:"ENABLE_ENCODE" envDefault:"true"`
-	EnableSprite      bool `env:"ENABLE_SPRITE" envDefault:"true"`
-	EnableLowPriority bool `env:"ENABLE_LOW_PRIORITY" envDefault:"true"`
-	ComputeSHA256     bool `env:"COMPUTE_SHA256" envDefault:"false"`
-	TaskConcurrency   int  `env:"TASK_CONCURRENCY" envDefault:"1"`
+	EnableEncode         bool `env:"ENABLE_ENCODE" envDefault:"true"`
+	EnableSprite         bool `env:"ENABLE_SPRITE" envDefault:"true"`
+	CopySubtitleSidecars bool `env:"COPY_SUBTITLE_SIDECARS" envDefault:"true"`
+	EnableLowPriority    bool `env:"ENABLE_LOW_PRIORITY" envDefault:"true"`
+	ComputeSHA256        bool `env:"COMPUTE_SHA256" envDefault:"false"`
+	TaskConcurrency      int  `env:"TASK_CONCURRENCY" envDefault:"1"`
 }
 
 func Load() (*Config, error) {

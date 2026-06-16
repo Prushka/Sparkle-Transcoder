@@ -67,16 +67,17 @@ func (s *Server) routes() {
 	api.GET("/tools", s.toolStatus)
 	api.GET("/config", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]interface{}{
-			"mediaRoot":       s.cfg.MediaRoot,
-			"output":          s.cfg.Output,
-			"incrementalScan": s.cfg.IncrementalScan,
-			"scanInterval":    s.cfg.ScanInterval.String(),
-			"encoders":        s.cfg.Encoders(),
-			"videoExt":        s.cfg.VideoExt,
-			"quality":         s.cfg.ConstantQuality,
-			"audioKbps":       s.cfg.AudioKbps,
-			"enableEncode":    s.cfg.EnableEncode,
-			"enableSprite":    s.cfg.EnableSprite,
+			"mediaRoot":            s.cfg.MediaRoot,
+			"output":               s.cfg.Output,
+			"incrementalScan":      s.cfg.IncrementalScan,
+			"scanInterval":         s.cfg.ScanInterval.String(),
+			"encoders":             s.cfg.Encoders(),
+			"videoExt":             s.cfg.VideoExt,
+			"quality":              s.cfg.ConstantQuality,
+			"audioKbps":            s.cfg.AudioKbps,
+			"enableEncode":         s.cfg.EnableEncode,
+			"enableSprite":         s.cfg.EnableSprite,
+			"copySubtitleSidecars": s.cfg.CopySubtitleSidecars,
 		})
 	})
 	api.GET("/scan", func(c echo.Context) error {
