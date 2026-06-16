@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,11 @@ import (
 )
 
 var ErrScanRunning = errors.New("scan already running")
+
+var (
+	duplicateMovieYearPrefixRe = regexp.MustCompile(`^(.*\b(?:19|20)\d{2}\b)`)
+	duplicateMovieQualityRe    = regexp.MustCompile(`^(480|576|720|1080|2160|4320)p?$`)
+)
 
 type Scanner struct {
 	cfg    *config.Config
@@ -145,6 +151,7 @@ func (s *Scanner) scan(ctx context.Context, force bool) (*Index, int, error) {
 		if err := s.fullScan(ctx, next, session); err != nil {
 			return nil, 0, err
 		}
+		annotateDuplicateMedia(next)
 		next.GeneratedAt = time.Now().UTC()
 		return next, len(next.Items), s.writeCache(next)
 	}
@@ -155,6 +162,7 @@ func (s *Scanner) scan(ctx context.Context, force bool) (*Index, int, error) {
 	if err != nil {
 		return nil, changed, err
 	}
+	annotateDuplicateMedia(next)
 	next.GeneratedAt = time.Now().UTC()
 	return next, changed, s.writeCache(next)
 }
@@ -600,7 +608,73 @@ func (s *Scanner) readCache() (*Index, error) {
 	if idx.Dirs == nil {
 		idx.Dirs = map[string]DirectoryState{}
 	}
+	annotateDuplicateMedia(idx)
 	return idx, nil
+}
+
+func annotateDuplicateMedia(idx *Index) {
+	if idx == nil {
+		return
+	}
+	counts := map[string]int{}
+	for _, item := range idx.Items {
+		if key := duplicateMediaKey(item); key != "" {
+			counts[key]++
+		}
+	}
+	for id, item := range idx.Items {
+		key := duplicateMediaKey(item)
+		item.HasDuplicate = key != "" && counts[key] > 1
+		idx.Items[id] = item
+	}
+}
+
+func duplicateMediaKey(item Item) string {
+	switch item.Kind {
+	case KindMovie:
+		if title := duplicateMovieTitleKey(item.Title); title != "" {
+			return "movie:" + title
+		}
+	case KindEpisode:
+		showName := item.Show
+		if showName == "" {
+			showName = item.Title
+		}
+		show := duplicateTextKey(showName)
+		if show != "" {
+			return fmt.Sprintf("episode:%s:%d:%d", show, item.Season, item.Episode)
+		}
+	}
+	return ""
+}
+
+func duplicateMovieTitleKey(title string) string {
+	normalized := duplicateTextKey(title)
+	if normalized == "" {
+		return ""
+	}
+	if match := duplicateMovieYearPrefixRe.FindStringSubmatch(normalized); len(match) == 2 {
+		normalized = strings.TrimSpace(match[1])
+	}
+	fields := strings.Fields(normalized)
+	for len(fields) > 0 && duplicateMovieSuffix(fields[len(fields)-1]) {
+		fields = fields[:len(fields)-1]
+	}
+	return strings.Join(fields, " ")
+}
+
+func duplicateMovieSuffix(value string) bool {
+	switch value {
+	case "remux", "proper", "repack", "extended", "unrated", "theatrical", "directors", "director", "cut", "bluray", "blu", "ray", "bdrip", "webdl", "web", "webrip", "hdtv", "hdr", "dv", "uhd":
+		return true
+	default:
+		return duplicateMovieQualityRe.MatchString(value)
+	}
+}
+
+func duplicateTextKey(value string) string {
+	value = strings.NewReplacer("_", " ", ".", " ").Replace(value)
+	return strings.ToLower(strings.Join(strings.Fields(value), " "))
 }
 
 func (s *Scanner) writeCache(idx *Index) error {

@@ -192,6 +192,39 @@ func TestCreateHonorsExplicitExtractStreamsFalse(t *testing.T) {
 	}
 }
 
+func TestCreateDefaultsToRequiringSubtitles(t *testing.T) {
+	root := t.TempDir()
+	output := t.TempDir()
+	input := filepath.Join(root, "Movies", "Example", "Example.mkv")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{
+		cfg: &config.Config{
+			MediaRoot:       root,
+			Output:          output,
+			EnableEncode:    true,
+			EnableSprite:    true,
+			VideoExt:        "mp4",
+			ConstantQuality: "18",
+			AudioKbps:       144,
+			Encoder:         "hevc",
+		},
+		queue:   make(chan string, 1),
+		cancels: map[string]context.CancelFunc{},
+	}
+	task, err := store.Create(context.Background(), testItem(input), Params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Params.RequireSubtitles == nil || !*task.Params.RequireSubtitles {
+		t.Fatalf("require subtitles = %+v, want true", task.Params.RequireSubtitles)
+	}
+}
+
 func TestReserveTaskDirGeneratesTenCharacterID(t *testing.T) {
 	output := t.TempDir()
 	store := &Store{cfg: &config.Config{Output: output}}
@@ -224,6 +257,7 @@ func TestWorkerUpdatesListCacheAfterRun(t *testing.T) {
 	enableEncode := false
 	enableSprites := false
 	extractStreams := false
+	requireSubtitles := false
 	now := time.Now().UTC()
 	task := &Task{
 		ID:        "abc12",
@@ -232,11 +266,12 @@ func TestWorkerUpdatesListCacheAfterRun(t *testing.T) {
 		OutputDir: filepath.Join(output, "abc12"),
 		State:     StateQueued,
 		Params: Params{
-			EnableEncode:   &enableEncode,
-			EnableSprites:  &enableSprites,
-			ExtractStreams: &extractStreams,
-			VideoExt:       "mp4",
-			AudioKbps:      144,
+			EnableEncode:     &enableEncode,
+			EnableSprites:    &enableSprites,
+			RequireSubtitles: &requireSubtitles,
+			ExtractStreams:   &extractStreams,
+			VideoExt:         "mp4",
+			AudioKbps:        144,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -409,6 +444,7 @@ func TestRunnerUpdateHookReportsIntermediateStates(t *testing.T) {
 	enableEncode := false
 	enableSprites := false
 	extractStreams := false
+	requireSubtitles := false
 	now := time.Now().UTC()
 	task := &Task{
 		ID:        "abc12",
@@ -417,11 +453,12 @@ func TestRunnerUpdateHookReportsIntermediateStates(t *testing.T) {
 		OutputDir: filepath.Join(output, "abc12"),
 		State:     StateQueued,
 		Params: Params{
-			EnableEncode:   &enableEncode,
-			EnableSprites:  &enableSprites,
-			ExtractStreams: &extractStreams,
-			VideoExt:       "mp4",
-			AudioKbps:      144,
+			EnableEncode:     &enableEncode,
+			EnableSprites:    &enableSprites,
+			RequireSubtitles: &requireSubtitles,
+			ExtractStreams:   &extractStreams,
+			VideoExt:         "mp4",
+			AudioKbps:        144,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -522,6 +559,46 @@ func TestRunnerExtractsDVDSubtitleWithMKVExtract(t *testing.T) {
 	}
 	if !foundMKVExtract {
 		t.Fatalf("calls = %+v, missing mkvextract", exec.calls)
+	}
+}
+
+func TestRunnerFailsWhenRequiredSubtitlesMissing(t *testing.T) {
+	output := t.TempDir()
+	input := filepath.Join(t.TempDir(), "Movies", "Example", "Example.mkv")
+	if err := os.MkdirAll(filepath.Dir(input), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	requireSubtitles := true
+	enableEncode := false
+	enableSprites := false
+	extractStreams := false
+	task := &Task{
+		ID:        "abc12",
+		InputPath: input,
+		Input:     filepath.Base(input),
+		OutputDir: filepath.Join(output, "abc12"),
+		State:     StateQueued,
+		Params: Params{
+			EnableEncode:     &enableEncode,
+			EnableSprites:    &enableSprites,
+			RequireSubtitles: &requireSubtitles,
+			ExtractStreams:   &extractStreams,
+			VideoExt:         "mp4",
+			AudioKbps:        144,
+		},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	runner := NewRunner(&config.Config{Output: output, Ffprobe: "ffprobe", Ffmpeg: "ffmpeg"}, nil, fakeExec{})
+	err := runner.Run(context.Background(), task)
+	if err == nil || !strings.Contains(err.Error(), "required subtitles not found") {
+		t.Fatalf("Run error = %v, want required subtitles failure", err)
+	}
+	if task.State != StateIncomplete {
+		t.Fatalf("task state = %s, want %s before failure", task.State, StateIncomplete)
 	}
 }
 

@@ -89,6 +89,26 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 		return err
 	}
 
+	if task.Params.ExtractStreams == nil || *task.Params.ExtractStreams {
+		if err := r.extractStreams(ctx, task, task.InputPath, subtitleType); err != nil {
+			if err := optionalRunnerWarning(ctx, task, "subtitle extraction", err); err != nil {
+				return err
+			}
+		}
+		if err := r.extractExternalSubtitles(ctx, task); err != nil {
+			return err
+		}
+	}
+	if err := r.validateRequiredSubtitles(ctx, task); err != nil {
+		return err
+	}
+	if task.Params.ExtractStreams == nil || *task.Params.ExtractStreams {
+		if err := r.extractStreams(ctx, task, task.InputPath, attachmentType); err != nil {
+			if err := optionalRunnerWarning(ctx, task, "attachment extraction", err); err != nil {
+				return err
+			}
+		}
+	}
 	if r.cfg.ComputeSHA256 {
 		sum, err := calculateSHA256(ctx, task.InputPath)
 		if err != nil {
@@ -104,21 +124,6 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 	}
 	if err := r.extractChapters(ctx, task); err != nil {
 		return err
-	}
-	if task.Params.ExtractStreams == nil || *task.Params.ExtractStreams {
-		if err := r.extractStreams(ctx, task, task.InputPath, subtitleType); err != nil {
-			if err := optionalRunnerWarning(ctx, task, "subtitle extraction", err); err != nil {
-				return err
-			}
-		}
-		if err := r.extractExternalSubtitles(ctx, task); err != nil {
-			return err
-		}
-		if err := r.extractStreams(ctx, task, task.InputPath, attachmentType); err != nil {
-			if err := optionalRunnerWarning(ctx, task, "attachment extraction", err); err != nil {
-				return err
-			}
-		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -175,6 +180,66 @@ func optionalRunnerWarning(ctx context.Context, task *Task, label string, err er
 	}
 	log.Warnf("%s warning for %s: %v", label, task.Input, err)
 	return nil
+}
+
+func taskHasSubtitleTracks(task *Task) bool {
+	for _, stream := range task.Streams {
+		if stream.CodecType == subtitleType {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) validateRequiredSubtitles(ctx context.Context, task *Task) error {
+	if task.Params.RequireSubtitles != nil && !*task.Params.RequireSubtitles {
+		return nil
+	}
+	if taskHasSubtitleTracks(task) {
+		return nil
+	}
+	if task.Params.ExtractStreams == nil || *task.Params.ExtractStreams {
+		return fmt.Errorf("required subtitles not found for %s", task.Input)
+	}
+	if r.taskMediaHasExternalSubtitles(task) {
+		return nil
+	}
+	hasSubtitles, err := r.sourceHasSubtitleTracks(ctx, task.InputPath)
+	if err != nil {
+		return err
+	}
+	if !hasSubtitles {
+		return fmt.Errorf("required subtitles not found for %s", task.Input)
+	}
+	return nil
+}
+
+func (r *Runner) taskMediaHasExternalSubtitles(task *Task) bool {
+	if task.Media != nil && len(task.Media.Subtitles) > 0 {
+		return true
+	}
+	if r.scanner == nil || task.MediaID == "" {
+		return false
+	}
+	item, ok := r.scanner.Get(task.MediaID)
+	return ok && len(item.Subtitles) > 0
+}
+
+func (r *Runner) sourceHasSubtitleTracks(ctx context.Context, path string) (bool, error) {
+	out, err := r.exec.Run(ctx, r.cfg.Ffprobe, "-v", "quiet", "-print_format", "json", "-show_streams", path)
+	if err != nil {
+		return false, err
+	}
+	var probe probeOutput
+	if err := json.Unmarshal(out, &probe); err != nil {
+		return false, err
+	}
+	for _, stream := range probe.Streams {
+		if stream.CodecType == subtitleType {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *Runner) fail(task *Task, err error) error {

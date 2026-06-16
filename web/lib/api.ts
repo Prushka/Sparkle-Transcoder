@@ -42,6 +42,7 @@ export type MediaItem = {
   nfo?: RelatedFile[];
   attachments?: RelatedFile[];
   sortKey: string;
+  hasDuplicate?: boolean;
 };
 
 export type ScanStatus = {
@@ -85,6 +86,7 @@ export type TaskParams = {
   fast: boolean;
   enableEncode?: boolean;
   enableSprites?: boolean;
+  requireSubtitles?: boolean;
   encoders?: string[];
   videoExt?: string;
   quality?: string;

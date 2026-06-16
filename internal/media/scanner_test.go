@@ -214,6 +214,38 @@ func TestScannerFullScansWhenCacheVersionChanges(t *testing.T) {
 	}
 }
 
+func TestScannerMarksDuplicateMoviesAndEpisodes(t *testing.T) {
+	root := testMediaRoot(t)
+	cfg := testConfig(t, root)
+	writeFile(t, filepath.Join(root, "Movies", "Example Movie (2026)", "Example Movie (2026).mkv"), "movie")
+	writeFile(t, filepath.Join(root, "Movies", "Example Movie (2026) Remux", "Example Movie (2026) Remux.mkv"), "movie")
+	writeFile(t, filepath.Join(root, "Movies", "Unique Movie (2026)", "Unique Movie (2026).mkv"), "movie")
+	writeFile(t, filepath.Join(root, "TV-Shows", "Example Show", "Season 1", "Example Show - S01E01 - Pilot.mkv"), "episode")
+	writeFile(t, filepath.Join(root, "TV-Shows", "Example Show", "Season 1", "Example Show - S01E01 - Pilot 4K.mkv"), "episode")
+	writeFile(t, filepath.Join(root, "TV-Shows", "Example Show", "Season 1", "Example Show - S01E02 - Next.mkv"), "episode")
+
+	scanner := NewScanner(cfg)
+	idx, err := scanner.Scan(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	duplicates := map[string]bool{}
+	for _, item := range idx.Items {
+		duplicates[item.FileName] = item.HasDuplicate
+	}
+	for _, name := range []string{"Example Movie (2026).mkv", "Example Movie (2026) Remux.mkv", "Example Show - S01E01 - Pilot.mkv", "Example Show - S01E01 - Pilot 4K.mkv"} {
+		if !duplicates[name] {
+			t.Fatalf("%s was not marked duplicate; duplicates = %+v", name, duplicates)
+		}
+	}
+	for _, name := range []string{"Unique Movie (2026).mkv", "Example Show - S01E02 - Next.mkv"} {
+		if duplicates[name] {
+			t.Fatalf("%s was marked duplicate; duplicates = %+v", name, duplicates)
+		}
+	}
+}
+
 func testMediaRoot(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "Managed-Videos")

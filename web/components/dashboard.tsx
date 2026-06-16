@@ -93,9 +93,11 @@ const IN_PROGRESS_FILTER = "In Progress";
 const COMPLETED_FILTER = "Completed";
 const NEW_VERSION_FILTER = "New Version";
 const STORYBOARDS_FILTER = "Storyboards";
+const DUPLICATE_FILTER = "Has Duplicate";
 const LIVE_TASK_POLL_INTERVAL_MS = 30000;
 const TASK_CANCEL_POLL_INTERVAL_MS = 1000;
 const TASK_CANCEL_TIMEOUT_MS = 120000;
+const LIBRARY_PAGE_SIZE = 300;
 
 type TaskSelection = {
   title: string;
@@ -137,7 +139,7 @@ export function Dashboard() {
   const [activeTab, setActiveTab] = React.useState("library");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
-  const [mediaLimit, setMediaLimit] = React.useState(150);
+  const [mediaLimit, setMediaLimit] = React.useState(LIBRARY_PAGE_SIZE);
   const [taskLimit, setTaskLimit] = React.useState(100);
   const [taskQuery, setTaskQuery] = React.useState("");
   const [taskStatusFilters, setTaskStatusFilters] = React.useState<TriStateFilters>({});
@@ -302,7 +304,13 @@ export function Dashboard() {
     return queueScope.filter((item) => `${item.title} ${item.show ?? ""} ${item.fileName} ${item.library}`.toLowerCase().includes(q));
   }, [query, queueScope]);
   const sortedMedia = React.useMemo(() => sortLibraryItems(filtered, librarySort), [filtered, librarySort]);
-  const visibleMedia = React.useMemo(() => sortedMedia.slice(0, mediaLimit), [mediaLimit, sortedMedia]);
+  const visibleMedia = React.useMemo(() => limitLibraryItems(sortedMedia, mediaLimit, librarySort), [librarySort, mediaLimit, sortedMedia]);
+  const hiddenMediaCount = sortedMedia.length - visibleMedia.length;
+  const nextMediaLimit = visibleMedia.length + LIBRARY_PAGE_SIZE;
+  const nextMediaCount = React.useMemo(() => {
+    if (hiddenMediaCount <= 0) return 0;
+    return Math.max(0, limitLibraryItems(sortedMedia, nextMediaLimit, librarySort).length - visibleMedia.length);
+  }, [hiddenMediaCount, librarySort, nextMediaLimit, sortedMedia, visibleMedia.length]);
   const mediaTaskIndex = React.useMemo(() => buildMediaTaskIndex(state.tasks), [state.tasks]);
   const currentMediaIndex = React.useMemo(() => buildCurrentMediaIndex(state.media), [state.media]);
   const taskCodecOptions = React.useMemo(() => taskOptions(state.tasks, taskCodecs), [state.tasks]);
@@ -320,7 +328,7 @@ export function Dashboard() {
   const taskStatDetail = activeRunnerTasks.length ? `Now ${activeTaskSummary(activeRunnerTasks)}` : `${countInProgressTasks(state.tasks)} in progress`;
 
   React.useEffect(() => {
-    setMediaLimit(150);
+    setMediaLimit(LIBRARY_PAGE_SIZE);
   }, [kind, library, librarySort, query]);
 
   React.useEffect(() => {
@@ -706,11 +714,11 @@ export function Dashboard() {
                 setSort={setLibrarySort}
               />
               <LibraryView items={visibleMedia} queueItems={queueScope} sort={librarySort} taskIndex={mediaTaskIndex} busy={busy} onTranscode={openTaskDialog} onDeleteTask={deleteTask} />
-              {filtered.length > visibleMedia.length ? (
+              {hiddenMediaCount > 0 ? (
                 <div className="mt-5 flex justify-center">
                   <Tip content="Render the next batch of matching media">
-                    <Button variant="outline" onClick={() => setMediaLimit((value) => value + 150)}>
-                      Show {Math.min(150, filtered.length - visibleMedia.length).toLocaleString()} more
+                    <Button variant="outline" onClick={() => setMediaLimit(nextMediaLimit)}>
+                      Show {Math.max(1, nextMediaCount).toLocaleString()} more
                     </Button>
                   </Tip>
                 </div>
@@ -1050,6 +1058,13 @@ function TaskToolbar({
           onChange={onTaskStatusFiltersChange}
           emptyLabel="No task status options"
         />
+        <TriStateFilterGroup
+          title="Has Duplicate"
+          options={[DUPLICATE_FILTER]}
+          filters={taskStatusFilters}
+          onChange={onTaskStatusFiltersChange}
+          emptyLabel="No duplicate media"
+        />
         <TriStateFilterGroup title="Encoded codecs" options={codecOptions} filters={codecFilters} onChange={onCodecFiltersChange} emptyLabel="No encoded codecs yet" />
         <TriStateFilterGroup
           title="Subtitle languages"
@@ -1174,24 +1189,21 @@ function LibraryView({
                   return (
                     <div key={`${show.name}-${season.number}`} className="space-y-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex min-w-0 items-center gap-2">
+                        <div className="min-w-0">
                           <Tip content={`${seasonCollapsed ? "Expand" : "Collapse"} season ${season.number}`}>
                             <Button
                               type="button"
                               variant="ghost"
-                              size="icon"
-                              className="size-7 shrink-0"
+                              className="h-auto justify-start whitespace-normal px-1.5 py-1 text-left"
                               aria-expanded={!seasonCollapsed}
                               aria-label={`${seasonCollapsed ? "Expand" : "Collapse"} season ${season.number}`}
                               onClick={() => setCollapsedSeasons((current) => toggleID(current, seasonKey))}
                             >
                               {seasonCollapsed ? <ChevronRight /> : <ChevronDown />}
+                              <span className="truncate text-sm font-medium text-muted-foreground">Season {season.number}</span>
+                              <Badge variant="outline">{season.items.length}</Badge>
                             </Button>
                           </Tip>
-                          <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-muted-foreground">
-                            <span className="truncate">Season {season.number}</span>
-                            <Badge variant="outline">{season.items.length}</Badge>
-                          </div>
                         </div>
                         <Tip content={`Queue all ${seasonItems.length.toLocaleString()} episodes in this season`}>
                           <Button
@@ -1259,24 +1271,28 @@ function MediaSection({
   return (
     <section>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="min-w-0">
           {onToggle ? (
             <Tip content={`${collapsed ? "Expand" : "Collapse"} ${title}`}>
               <Button
                 type="button"
                 variant="ghost"
-                size="icon"
-                className="size-8 shrink-0"
+                className="h-auto justify-start whitespace-normal px-1.5 py-1 text-left"
                 aria-expanded={!collapsed}
                 aria-label={`${collapsed ? "Expand" : "Collapse"} ${title}`}
                 onClick={onToggle}
               >
                 {collapsed ? <ChevronRight /> : <ChevronDown />}
+                <Icon className="size-4 shrink-0 text-primary" />
+                <span className="break-words text-lg font-semibold leading-tight tracking-normal">{title}</span>
               </Button>
             </Tip>
-          ) : null}
-          <Icon className="size-4 shrink-0 text-primary" />
-          <h2 className="break-words text-lg font-semibold leading-tight tracking-normal">{title}</h2>
+          ) : (
+            <div className="flex min-w-0 items-center gap-2">
+              <Icon className="size-4 shrink-0 text-primary" />
+              <h2 className="break-words text-lg font-semibold leading-tight tracking-normal">{title}</h2>
+            </div>
+          )}
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
       </div>
@@ -1727,6 +1743,7 @@ function TaskDialog({
   const [fast, setFast] = React.useState(false);
   const [enableEncode, setEnableEncode] = React.useState(true);
   const [enableSprites, setEnableSprites] = React.useState(true);
+  const [requireSubtitles, setRequireSubtitles] = React.useState(true);
   const [extractStreams, setExtractStreams] = React.useState(true);
   const [encoders, setEncoders] = React.useState<string[]>(["av1"]);
   const [quality, setQuality] = React.useState(20);
@@ -1740,6 +1757,7 @@ function TaskDialog({
     if (!config) return;
     setEnableEncode(config.enableEncode);
     setEnableSprites(config.enableSprite);
+    setRequireSubtitles(true);
     setEncoders(config.encoders?.length ? config.encoders : ["av1"]);
     setQuality(Number(config.quality || 20));
     setAudioKbps(config.audioKbps || 144);
@@ -1797,6 +1815,7 @@ function TaskDialog({
       fast,
       enableEncode,
       enableSprites,
+      requireSubtitles,
       extractStreams,
       encoders,
       quality: String(quality),
@@ -1975,6 +1994,9 @@ function TaskDialog({
             </ToggleLine>
             <ToggleLine label="Encode video" checked={enableEncode} onCheckedChange={setEnableEncode} tip="Run HandBrake or ffmpeg output generation">
               <Video className="size-4 text-primary" />
+            </ToggleLine>
+            <ToggleLine label="Require subtitles" checked={requireSubtitles} onCheckedChange={setRequireSubtitles} tip="Fail the task if no subtitle tracks are found">
+              <Subtitles className="size-4 text-primary" />
             </ToggleLine>
             <ToggleLine label="Extract streams" checked={extractStreams} onCheckedChange={setExtractStreams} tip="Extract subtitle, attachment, and audio streams">
               <Subtitles className="size-4 text-primary" />
@@ -2411,6 +2433,7 @@ function taskMatchesStatusFilters(task: TranscodeTask, filters: TriStateFilters,
   const completed = task.state === "complete";
   const newVersion = taskHasNewVersion(task, currentMediaIndex);
   const hasStoryboards = taskHasStoryboards(task);
+  const hasDuplicate = taskHasDuplicateMedia(task, currentMediaIndex);
   if (included.includes(IN_PROGRESS_FILTER) && !inProgress) return false;
   if (excluded.includes(IN_PROGRESS_FILTER) && inProgress) return false;
   if (included.includes(COMPLETED_FILTER) && !completed) return false;
@@ -2419,11 +2442,17 @@ function taskMatchesStatusFilters(task: TranscodeTask, filters: TriStateFilters,
   if (excluded.includes(NEW_VERSION_FILTER) && newVersion) return false;
   if (included.includes(STORYBOARDS_FILTER) && !hasStoryboards) return false;
   if (excluded.includes(STORYBOARDS_FILTER) && hasStoryboards) return false;
+  if (included.includes(DUPLICATE_FILTER) && !hasDuplicate) return false;
+  if (excluded.includes(DUPLICATE_FILTER) && hasDuplicate) return false;
   return true;
 }
 
 function taskHasStoryboards(task: TranscodeTask) {
   return Boolean(task.files?.["storyboard.vtt"]);
+}
+
+function taskHasDuplicateMedia(task: TranscodeTask, index: CurrentMediaIndex) {
+  return Boolean(mediaForTask(task, index)?.hasDuplicate);
 }
 
 function taskMatchesCodecFilters(codecs: string[], filters: TriStateFilters) {
@@ -2771,6 +2800,36 @@ function sortLibraryItems(items: MediaItem[], sort: LibrarySort) {
   return next.sort(compareMediaTitle);
 }
 
+function limitLibraryItems(items: MediaItem[], limit: number, sort: LibrarySort) {
+  if (sort !== "recent") return items.slice(0, limit);
+
+  const visible: MediaItem[] = [];
+  const visibleEpisodeShows = new Set<string>();
+  const allEpisodesByShow = items.reduce((groups, item) => {
+    if (item.kind !== "episode") return groups;
+    const show = episodeShowName(item);
+    if (!groups.has(show)) groups.set(show, []);
+    groups.get(show)!.push(item);
+    return groups;
+  }, new Map<string, MediaItem[]>());
+
+  for (const item of items) {
+    if (visible.length >= limit) break;
+
+    if (item.kind !== "episode") {
+      visible.push(item);
+      continue;
+    }
+
+    const show = episodeShowName(item);
+    if (visibleEpisodeShows.has(show)) continue;
+    visibleEpisodeShows.add(show);
+    visible.push(...(allEpisodesByShow.get(show) ?? [item]));
+  }
+
+  return sortLibraryItems(visible, sort);
+}
+
 function compareMediaTitle(a: MediaItem, b: MediaItem) {
   return a.sortKey.localeCompare(b.sortKey) || a.fileName.localeCompare(b.fileName);
 }
@@ -2788,7 +2847,7 @@ function newestMediaModTime(items: MediaItem[]) {
   return items.reduce((newest, item) => Math.max(newest, mediaModTime(item)), 0);
 }
 
-function newestSeasonModTime(seasons: Map<number, MediaItem[]>) {
+function newestShowModTime(seasons: Map<number, MediaItem[]>) {
   return Array.from(seasons.values()).reduce((newest, items) => Math.max(newest, newestMediaModTime(items)), 0);
 }
 
@@ -3004,22 +3063,16 @@ function groupEpisodes(items: MediaItem[], sort: LibrarySort = "title") {
   return Array.from(shows.entries())
     .sort(([aName, aSeasons], [bName, bSeasons]) =>
       sort === "recent"
-        ? newestSeasonModTime(bSeasons) - newestSeasonModTime(aSeasons) || aName.localeCompare(bName)
+        ? newestShowModTime(bSeasons) - newestShowModTime(aSeasons) || aName.localeCompare(bName)
         : aName.localeCompare(bName)
     )
     .map(([name, seasons]) => ({
       name,
       seasons: Array.from(seasons.entries())
-        .sort(([aNumber, aItems], [bNumber, bItems]) =>
-          sort === "recent"
-            ? newestMediaModTime(bItems) - newestMediaModTime(aItems) || aNumber - bNumber
-            : aNumber - bNumber
-        )
+        .sort(([aNumber], [bNumber]) => aNumber - bNumber)
         .map(([number, seasonItems]) => ({
           number,
-          items: sort === "recent"
-            ? [...seasonItems].sort(compareMediaRecentlyAdded)
-            : sortMediaItems(seasonItems)
+          items: sortMediaItems(seasonItems)
         }))
     }));
 }

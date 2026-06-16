@@ -259,6 +259,10 @@ func (s *Store) Create(ctx context.Context, item media.Item, params Params) (*Ta
 		extractStreams := true
 		params.ExtractStreams = &extractStreams
 	}
+	if params.RequireSubtitles == nil {
+		requireSubtitles := true
+		params.RequireSubtitles = &requireSubtitles
+	}
 	id, outputDir, err := s.reserveTaskDir()
 	if err != nil {
 		return nil, err
@@ -889,6 +893,8 @@ func decodeLegacyTask(content []byte) (*Task, error) {
 	task.Params.Fast = legacy.Fast
 	extractStreams := true
 	task.Params.ExtractStreams = &extractStreams
+	requireSubtitles := false
+	task.Params.RequireSubtitles = &requireSubtitles
 	task.Legacy = true
 	return task, nil
 }

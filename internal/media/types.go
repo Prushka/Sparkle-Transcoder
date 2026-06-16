@@ -53,6 +53,7 @@ type Item struct {
 	NFO          []RelatedFile `json:"nfo,omitempty"`
 	Attachments  []RelatedFile `json:"attachments,omitempty"`
 	SortKey      string        `json:"sortKey"`
+	HasDuplicate bool          `json:"hasDuplicate,omitempty"`
 }
 
 type DirectoryState struct {
