@@ -13,6 +13,62 @@ import (
 	"sparkle-transcoder/internal/executil"
 )
 
+func TestHandbrakeTranscodeRunsFromInputDirWithShortInputName(t *testing.T) {
+	inputDir := filepath.Join(t.TempDir(),
+		"WorldEnd - What are you doing at the end of the world! Are you busy! Will you save us!",
+		"Season 1")
+	input := filepath.Join(inputDir, "WorldEnd - What are you doing at the end of the world! Are you busy! Will you save us! - S01E02 - Late Autumn Night's Dream Bluray-1080p.mkv")
+	outputDir := t.TempDir()
+	exec := &spriteRecordingExec{}
+	runner := NewRunner(&config.Config{
+		HandbrakeCli: "HandBrakeCLI",
+		Av1Encoder:   "svt_av1_10bit",
+		Av1Preset:    "4",
+	}, nil, exec)
+	task := &Task{
+		InputPath: input,
+		OutputDir: outputDir,
+		Params: Params{
+			Encoders:  []string{"av1"},
+			VideoExt:  "mp4",
+			Quality:   "20",
+			AudioKbps: 144,
+		},
+	}
+
+	if err := runner.handbrakeTranscode(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := exec.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1: %+v", len(calls), calls)
+	}
+	if calls[0].dir != inputDir {
+		t.Fatalf("cwd = %q, want %q", calls[0].dir, inputDir)
+	}
+	if calls[0].name != "HandBrakeCLI" {
+		t.Fatalf("command = %q, want HandBrakeCLI", calls[0].name)
+	}
+	wantInput := filepath.Base(input)
+	if got := calls[0].args[1]; got != wantInput {
+		t.Fatalf("input arg = %q, want %q", got, wantInput)
+	}
+	if filepath.IsAbs(calls[0].args[1]) {
+		t.Fatalf("input arg should be a short filename, got %q", calls[0].args[1])
+	}
+	wantOutput := filepath.Join(outputDir, "av1.mp4")
+	for i, arg := range calls[0].args {
+		if arg == "-o" {
+			if i+1 >= len(calls[0].args) || calls[0].args[i+1] != wantOutput {
+				t.Fatalf("output arg after -o = %q, want %q", calls[0].args[i+1], wantOutput)
+			}
+			return
+		}
+	}
+	t.Fatalf("args missing -o: %+v", calls[0].args)
+}
+
 func TestGenerateSpritesSeeksBeforeFilteringAndCapsVTT(t *testing.T) {
 	outputDir := t.TempDir()
 	exec := &spriteRecordingExec{}
@@ -73,6 +129,7 @@ type spriteRecordingExec struct {
 var _ executil.Runner = (*spriteRecordingExec)(nil)
 
 type spriteExecCall struct {
+	dir  string
 	name string
 	args []string
 }
@@ -81,6 +138,13 @@ func (e *spriteRecordingExec) Run(_ context.Context, name string, args ...string
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.calls = append(e.calls, spriteExecCall{name: name, args: append([]string(nil), args...)})
+	return nil, nil
+}
+
+func (e *spriteRecordingExec) RunInDir(_ context.Context, dir string, name string, args ...string) ([]byte, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.calls = append(e.calls, spriteExecCall{dir: dir, name: name, args: append([]string(nil), args...)})
 	return nil, nil
 }
 

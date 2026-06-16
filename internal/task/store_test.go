@@ -654,6 +654,8 @@ func TestRunnerExtractsDVDSubtitleWithMKVExtract(t *testing.T) {
 	}
 	wantOutput := filepath.Join(output, "abc12", wantLocation)
 	wantTrackArg := "3:" + wantOutput
+	wantInputDir := filepath.Dir(input)
+	wantInputArg := filepath.Base(input)
 	foundMKVExtract := false
 	for _, call := range exec.calls {
 		if call.name == "ffmpeg" {
@@ -661,8 +663,11 @@ func TestRunnerExtractsDVDSubtitleWithMKVExtract(t *testing.T) {
 		}
 		if call.name == "mkvextract" {
 			foundMKVExtract = true
-			if len(call.args) != 3 || call.args[0] != "tracks" || call.args[1] != input || call.args[2] != wantTrackArg {
-				t.Fatalf("mkvextract args = %+v, want [tracks %s %s]", call.args, input, wantTrackArg)
+			if call.dir != wantInputDir {
+				t.Fatalf("mkvextract cwd = %q, want %q", call.dir, wantInputDir)
+			}
+			if len(call.args) != 3 || call.args[0] != "tracks" || call.args[1] != wantInputArg || call.args[2] != wantTrackArg {
+				t.Fatalf("mkvextract args = %+v, want [tracks %s %s]", call.args, wantInputArg, wantTrackArg)
 			}
 		}
 	}
@@ -1573,6 +1578,10 @@ func (fakeExec) Run(context.Context, string, ...string) ([]byte, error) {
 	return []byte(`{"chapters":[],"streams":[]}`), nil
 }
 
+func (fakeExec) RunInDir(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+	return fakeExec{}.Run(ctx, name, args...)
+}
+
 type cancelStreamProbeExec struct{}
 
 var _ executil.Runner = cancelStreamProbeExec{}
@@ -1586,7 +1595,12 @@ func (cancelStreamProbeExec) Run(ctx context.Context, name string, args ...strin
 	return []byte(`{"chapters":[],"streams":[]}`), nil
 }
 
+func (cancelStreamProbeExec) RunInDir(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+	return cancelStreamProbeExec{}.Run(ctx, name, args...)
+}
+
 type recordedCall struct {
+	dir  string
 	name string
 	args []string
 }
@@ -1599,6 +1613,14 @@ var _ executil.Runner = (*dvdSubtitleExec)(nil)
 
 func (e *dvdSubtitleExec) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	e.calls = append(e.calls, recordedCall{name: name, args: append([]string(nil), args...)})
+	if name == "ffprobe" {
+		return []byte(`{"chapters":[],"streams":[{"index":3,"codec_type":"subtitle","codec_name":"dvd_subtitle","tags":{"language":"eng"}}]}`), nil
+	}
+	return []byte{}, nil
+}
+
+func (e *dvdSubtitleExec) RunInDir(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+	e.calls = append(e.calls, recordedCall{dir: dir, name: name, args: append([]string(nil), args...)})
 	if name == "ffprobe" {
 		return []byte(`{"chapters":[],"streams":[{"index":3,"codec_type":"subtitle","codec_name":"dvd_subtitle","tags":{"language":"eng"}}]}`), nil
 	}
@@ -1618,6 +1640,10 @@ func (e *blockingExec) Run(ctx context.Context, name string, args ...string) ([]
 	})
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+func (e *blockingExec) RunInDir(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+	return e.Run(ctx, name, args...)
 }
 
 func testItem(path string) media.Item {

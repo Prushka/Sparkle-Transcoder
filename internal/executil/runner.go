@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"sync"
 
 	"sparkle-transcoder/internal/priority"
@@ -18,6 +19,7 @@ const (
 
 type Runner interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
+	RunInDir(ctx context.Context, dir string, name string, args ...string) ([]byte, error)
 }
 
 type LocalRunner struct {
@@ -25,15 +27,28 @@ type LocalRunner struct {
 }
 
 func (r LocalRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return r.RunInDir(ctx, "", name, args...)
+}
+
+func (r LocalRunner) RunInDir(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if dir != "" && !filepath.IsAbs(name) && filepath.Base(name) != name {
+		if abs, err := filepath.Abs(name); err == nil {
+			name = abs
+		}
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	stdout := newLimitedBuffer(maxCommandStdout)
 	stderr := newLimitedBuffer(maxCommandStderr)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	log.Debugf("command: %s", cmd.String())
+	cmdLabel := commandLabel(cmd)
+	log.Debugf("command: %s", cmdLabel)
 	if err := cmd.Start(); err != nil {
 		return stdout.Bytes(), err
 	}
@@ -54,12 +69,20 @@ func (r LocalRunner) Run(ctx context.Context, name string, args ...string) ([]by
 		if errOutput == "" {
 			errOutput = string(stdout.Bytes())
 		}
-		return stdout.Bytes(), fmt.Errorf("%s failed: %w: %s", cmd.String(), err, errOutput)
+		return stdout.Bytes(), fmt.Errorf("%s failed: %w: %s", cmdLabel, err, errOutput)
 	}
 	if stdout.Truncated() {
 		return stdout.Bytes(), fmt.Errorf("%s produced more than %d bytes on stdout", cmd.String(), maxCommandStdout)
 	}
 	return stdout.Bytes(), nil
+}
+
+func commandLabel(cmd *exec.Cmd) string {
+	label := cmd.String()
+	if cmd.Dir == "" {
+		return label
+	}
+	return fmt.Sprintf("(cd %s && %s)", cmd.Dir, label)
 }
 
 type limitedBuffer struct {

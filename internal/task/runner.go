@@ -228,7 +228,7 @@ func (r *Runner) taskMediaHasExternalSubtitles(task *Task) bool {
 }
 
 func (r *Runner) sourceHasSubtitleTracks(ctx context.Context, path string) (bool, error) {
-	out, err := r.exec.Run(ctx, r.cfg.Ffprobe, "-v", "quiet", "-print_format", "json", "-show_streams", path)
+	out, err := r.runWithMediaSource(ctx, path, r.cfg.Ffprobe, "-v", "quiet", "-print_format", "json", "-show_streams", mediaSourceArg(path))
 	if err != nil {
 		return false, err
 	}
@@ -261,7 +261,7 @@ func (r *Runner) fail(task *Task, err error) error {
 }
 
 func (r *Runner) extractChapters(ctx context.Context, task *Task) error {
-	out, err := r.exec.Run(ctx, r.cfg.Ffprobe, "-v", "quiet", "-print_format", "json", "-show_chapters", task.InputPath)
+	out, err := r.runWithMediaSource(ctx, task.InputPath, r.cfg.Ffprobe, "-v", "quiet", "-print_format", "json", "-show_chapters", mediaSourceArg(task.InputPath))
 	if err != nil {
 		return err
 	}
@@ -275,7 +275,8 @@ func (r *Runner) extractChapters(ctx context.Context, task *Task) error {
 }
 
 func (r *Runner) extractStreams(ctx context.Context, task *Task, source string, streamType string) error {
-	out, err := r.exec.Run(ctx, r.cfg.Ffprobe, "-v", "quiet", "-print_format", "json", "-show_streams", source)
+	sourceArg := mediaSourceArg(source)
+	out, err := r.runWithMediaSource(ctx, source, r.cfg.Ffprobe, "-v", "quiet", "-print_format", "json", "-show_streams", sourceArg)
 	if err != nil {
 		return err
 	}
@@ -289,7 +290,7 @@ func (r *Runner) extractStreams(ctx context.Context, task *Task, source string, 
 			continue
 		}
 		found = true
-		if err := r.extractOneStream(ctx, task, source, stream); err != nil {
+		if err := r.extractOneStream(ctx, task, source, sourceArg, stream); err != nil {
 			return err
 		}
 	}
@@ -300,7 +301,7 @@ func (r *Runner) extractStreams(ctx context.Context, task *Task, source string, 
 	return r.writeTask(task)
 }
 
-func (r *Runner) extractOneStream(ctx context.Context, task *Task, source string, stream StreamInfo) error {
+func (r *Runner) extractOneStream(ctx context.Context, task *Task, source string, sourceArg string, stream StreamInfo) error {
 	lang := stream.Tags.Language
 	if lang == "" {
 		lang = "und"
@@ -322,7 +323,7 @@ func (r *Runner) extractOneStream(ctx context.Context, task *Task, source string
 		if stream.CodecName == "dvd_subtitle" {
 			// FFmpeg's .sub muxer is MicroDVD text; mkvextract preserves VobSub sidecars.
 			filename := fmt.Sprintf("%s.sub", id)
-			if _, err := r.exec.Run(ctx, firstNonEmpty(r.cfg.MKVExtract, "mkvextract"), "tracks", source, fmt.Sprintf("%d:%s", stream.Index, r.outputJoin(task, filename))); err != nil {
+			if _, err := r.runWithMediaSource(ctx, source, firstNonEmpty(r.cfg.MKVExtract, "mkvextract"), "tracks", sourceArg, fmt.Sprintf("%d:%s", stream.Index, r.outputJoin(task, filename))); err != nil {
 				return err
 			}
 			baseStream.Location = filename
@@ -331,8 +332,8 @@ func (r *Runner) extractOneStream(ctx context.Context, task *Task, source string
 		}
 		if ext, ok := imageSubtitleExt[stream.CodecName]; ok {
 			filename := fmt.Sprintf("%s.%s", id, ext)
-			args := []string{"-y", "-i", source, "-map", fmt.Sprintf("0:%d", stream.Index), "-c:s", "copy", r.outputJoin(task, filename)}
-			if _, err := r.exec.Run(ctx, r.cfg.Ffmpeg, args...); err != nil {
+			args := []string{"-y", "-i", sourceArg, "-map", fmt.Sprintf("0:%d", stream.Index), "-c:s", "copy", r.outputJoin(task, filename)}
+			if _, err := r.runWithMediaSource(ctx, source, r.cfg.Ffmpeg, args...); err != nil {
 				return err
 			}
 			baseStream.Location = filename
@@ -341,7 +342,7 @@ func (r *Runner) extractOneStream(ctx context.Context, task *Task, source string
 		}
 		ass := fmt.Sprintf("%s.ass", id)
 		vtt := fmt.Sprintf("%s.vtt", id)
-		if _, err := r.exec.Run(ctx, r.cfg.Ffmpeg, "-y", "-i", source, "-map", fmt.Sprintf("0:%d", stream.Index), "-c:s", "ass", r.outputJoin(task, ass)); err != nil {
+		if _, err := r.runWithMediaSource(ctx, source, r.cfg.Ffmpeg, "-y", "-i", sourceArg, "-map", fmt.Sprintf("0:%d", stream.Index), "-c:s", "ass", r.outputJoin(task, ass)); err != nil {
 			return err
 		}
 		if _, err := r.exec.Run(ctx, r.cfg.Ffmpeg, "-y", "-i", r.outputJoin(task, ass), "-c:s", "webvtt", r.outputJoin(task, vtt)); err != nil {
@@ -360,7 +361,7 @@ func (r *Runner) extractOneStream(ctx context.Context, task *Task, source string
 			ext = "audio"
 		}
 		filename := fmt.Sprintf("%s.%s", id, ext)
-		if _, err := r.exec.Run(ctx, r.cfg.Ffmpeg, "-y", "-i", source, "-map", fmt.Sprintf("0:%d", stream.Index), "-c:a", "copy", r.outputJoin(task, filename)); err != nil {
+		if _, err := r.runWithMediaSource(ctx, source, r.cfg.Ffmpeg, "-y", "-i", sourceArg, "-map", fmt.Sprintf("0:%d", stream.Index), "-c:a", "copy", r.outputJoin(task, filename)); err != nil {
 			return err
 		}
 		baseStream.Location = filename
@@ -370,7 +371,7 @@ func (r *Runner) extractOneStream(ctx context.Context, task *Task, source string
 		if filename == "" {
 			filename = fmt.Sprintf("attachment-%d", stream.Index)
 		}
-		if _, err := r.exec.Run(ctx, r.cfg.Ffmpeg, "-y", fmt.Sprintf("-dump_attachment:%d", stream.Index), r.outputJoin(task, filename), "-i", source, "-t", "0", "-f", "null", "-"); err != nil {
+		if _, err := r.runWithMediaSource(ctx, source, r.cfg.Ffmpeg, "-y", fmt.Sprintf("-dump_attachment:%d", stream.Index), r.outputJoin(task, filename), "-i", sourceArg, "-t", "0", "-f", "null", "-"); err != nil {
 			return err
 		}
 		baseStream.Location = filename
@@ -427,7 +428,7 @@ func (r *Runner) ffmpegCopyOnly(ctx context.Context, task *Task) error {
 	outputFile := r.outputJoin(task, fmt.Sprintf("hevc.%s", task.Params.VideoExt))
 	args := []string{
 		"-y",
-		"-i", task.InputPath,
+		"-i", mediaSourceArg(task.InputPath),
 		"-map", "0:v",
 		"-c:v", "copy",
 		"-map", "0:a?",
@@ -437,7 +438,7 @@ func (r *Runner) ffmpegCopyOnly(ctx context.Context, task *Task) error {
 		"-map", "-0:s",
 		outputFile,
 	}
-	if _, err := r.exec.Run(ctx, r.cfg.Ffmpeg, args...); err != nil {
+	if _, err := r.runWithMediaSource(ctx, task.InputPath, r.cfg.Ffmpeg, args...); err != nil {
 		return err
 	}
 	task.EncodedCodecs = appendUnique(task.EncodedCodecs, "hevc")
@@ -462,7 +463,7 @@ func (r *Runner) handbrakeTranscode(ctx context.Context, task *Task) error {
 		g.Go(func() error {
 			outputFile := r.outputJoin(task, fmt.Sprintf("%s.%s", encoder, task.Params.VideoExt))
 			args := []string{
-				"-i", task.InputPath,
+				"-i", mediaSourceArg(task.InputPath),
 				"-o", outputFile,
 				"--encoder", encoderCmd,
 				"--vfr",
@@ -483,7 +484,7 @@ func (r *Runner) handbrakeTranscode(ctx context.Context, task *Task) error {
 			if tune != "" {
 				args = append(args, "--encoder-tune", tune)
 			}
-			if _, err := r.exec.Run(ctx, r.cfg.HandbrakeCli, args...); err != nil {
+			if _, err := r.runWithMediaSource(ctx, task.InputPath, r.cfg.HandbrakeCli, args...); err != nil {
 				return err
 			}
 			mu.Lock()
@@ -704,6 +705,31 @@ func (r *Runner) writeTask(task *Task) error {
 		hook(task)
 	}
 	return nil
+}
+
+func (r *Runner) runWithMediaSource(ctx context.Context, sourcePath string, name string, args ...string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if sourcePath == "" {
+		return r.exec.Run(ctx, name, args...)
+	}
+	dir := filepath.Dir(sourcePath)
+	if dir == "." || dir == "" {
+		return r.exec.Run(ctx, name, args...)
+	}
+	return r.exec.RunInDir(ctx, dir, name, args...)
+}
+
+func mediaSourceArg(sourcePath string) string {
+	if sourcePath == "" {
+		return sourcePath
+	}
+	base := filepath.Base(sourcePath)
+	if base == sourcePath {
+		return sourcePath
+	}
+	return base
 }
 
 func (r *Runner) codecVideo(task *Task, codec string) string {
