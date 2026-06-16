@@ -1053,17 +1053,10 @@ function TaskToolbar({
       <div className="grid w-full gap-3 lg:grid-cols-[minmax(0,260px)_minmax(0,260px)_minmax(0,1fr)]">
         <TriStateFilterGroup
           title="Task Status"
-          options={[IN_PROGRESS_FILTER, COMPLETED_FILTER, NEW_VERSION_FILTER, STORYBOARDS_FILTER]}
+          options={[IN_PROGRESS_FILTER, COMPLETED_FILTER, NEW_VERSION_FILTER, STORYBOARDS_FILTER, DUPLICATE_FILTER]}
           filters={taskStatusFilters}
           onChange={onTaskStatusFiltersChange}
           emptyLabel="No task status options"
-        />
-        <TriStateFilterGroup
-          title="Has Duplicate"
-          options={[DUPLICATE_FILTER]}
-          filters={taskStatusFilters}
-          onChange={onTaskStatusFiltersChange}
-          emptyLabel="No duplicate media"
         />
         <TriStateFilterGroup title="Encoded codecs" options={codecOptions} filters={codecFilters} onChange={onCodecFiltersChange} emptyLabel="No encoded codecs yet" />
         <TriStateFilterGroup
