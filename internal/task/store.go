@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +45,14 @@ type queuedTaskCandidate struct {
 	createdAt time.Time
 	updatedAt time.Time
 }
+
+var (
+	taskEpisodeRe               = regexp.MustCompile(`(?i)\bS(\d{1,2})E(\d{1,3})\b`)
+	taskMovieYearPrefixRe       = regexp.MustCompile(`^(.*\b(?:19|20)\d{2}\b)`)
+	taskMovieQualityRe          = regexp.MustCompile(`^(480|576|720|1080|2160|4320)p?$`)
+	taskMovieFolderQualityTagRe = regexp.MustCompile(`(?i)\b(480|576|720|1080|2160|4320)p\b`)
+	taskTextSeparatorRe         = regexp.MustCompile(`[^a-z0-9]+`)
+)
 
 var ErrTaskRunning = errors.New("task is running; cancel it before deleting")
 var ErrTaskActive = errors.New("task is already queued or running")
@@ -124,6 +134,7 @@ func (s *Store) List(filter ListFilter) ([]Task, error) {
 	cached := cloneTasks(s.cache)
 	s.cacheMu.RUnlock()
 	s.markRunning(cached)
+	annotateDuplicateTasks(cached)
 	if filter.State == "" {
 		return cached, nil
 	}
@@ -215,6 +226,7 @@ func (s *Store) Read(id string) (*Task, error) {
 	}
 	tasks := []Task{*task}
 	s.markRunning(tasks)
+	annotateDuplicateTasks(tasks)
 	*task = tasks[0]
 	return task, nil
 }
@@ -707,6 +719,7 @@ func (s *Store) activeTasks() []Task {
 		}
 		return left.Before(right)
 	})
+	annotateDuplicateTasks(tasks)
 	return tasks
 }
 
@@ -744,6 +757,7 @@ func (s *Store) mergeRefreshTasks(tasks []Task, scanStarted time.Time) []Task {
 	}
 	s.mu.Unlock()
 	sortTasksByUpdatedAt(next)
+	annotateDuplicateTasks(next)
 	return next
 }
 
@@ -1064,6 +1078,10 @@ func cloneTask(task Task) Task {
 		}
 		task.Files = files
 	}
+	if task.Media != nil {
+		mediaItem := *task.Media
+		task.Media = &mediaItem
+	}
 	return task
 }
 
@@ -1108,6 +1126,169 @@ func compactTask(task Task) Task {
 	task.Media = nil
 	task.Files = nil
 	return task
+}
+
+func annotateDuplicateTasks(tasks []Task) {
+	counts := map[string]int{}
+	for _, task := range tasks {
+		for _, key := range duplicateTaskKeys(task) {
+			counts[key]++
+		}
+	}
+	for i := range tasks {
+		tasks[i].HasDuplicate = false
+		for _, key := range duplicateTaskKeys(tasks[i]) {
+			if counts[key] > 1 {
+				tasks[i].HasDuplicate = true
+				break
+			}
+		}
+	}
+}
+
+func duplicateTaskKeys(task Task) []string {
+	keys := make([]string, 0, 8)
+	add := func(key string) {
+		if key == "" {
+			return
+		}
+		for _, existing := range keys {
+			if existing == key {
+				return
+			}
+		}
+		keys = append(keys, key)
+	}
+	add(taskKey("media", task.MediaID))
+	add(taskKey("path", task.InputPath))
+	if task.InputParent != "" && task.Input != "" {
+		add(taskKey("path", filepath.Join(task.InputParent, task.Input)))
+	}
+	add(taskKey("rel", task.InputRelPath))
+	if task.Media != nil {
+		add(mediaDuplicateTaskKey(*task.Media))
+	}
+	file := firstNonEmpty(task.Input, filepath.Base(task.InputPath), filepath.Base(filepath.FromSlash(task.InputRelPath)))
+	add(fileDuplicateTaskKey(task, file))
+	return keys
+}
+
+func mediaDuplicateTaskKey(item media.Item) string {
+	switch item.Kind {
+	case media.KindEpisode:
+		show := firstNonEmpty(item.Show, showFromEpisodeFile(item.FileName), item.Title)
+		if showKey := taskTextKey(show); showKey != "" && item.Season > 0 && item.Episode > 0 {
+			return fmt.Sprintf("episode:%s:%d:%d", showKey, item.Season, item.Episode)
+		}
+	case media.KindMovie:
+		if title := movieDuplicateTitleKey(firstNonEmpty(item.Title, item.FileName)); title != "" {
+			return "movie:" + title
+		}
+	}
+	return ""
+}
+
+func fileDuplicateTaskKey(task Task, file string) string {
+	if file == "" {
+		return ""
+	}
+	base := strings.TrimSuffix(file, filepath.Ext(file))
+	if match := taskEpisodeRe.FindStringSubmatch(base); len(match) == 3 {
+		show := showFromEpisodeFile(base)
+		season, _ := strconv.Atoi(match[1])
+		episode, _ := strconv.Atoi(match[2])
+		if showKey := taskTextKey(show); showKey != "" && season > 0 && episode > 0 {
+			return fmt.Sprintf("episode:%s:%d:%d", showKey, season, episode)
+		}
+	}
+	if title := movieDuplicateTitleKey(movieTitleCandidate(task, base)); title != "" {
+		return "movie:" + title
+	}
+	return ""
+}
+
+func showFromEpisodeFile(value string) string {
+	base := strings.TrimSuffix(value, filepath.Ext(value))
+	match := taskEpisodeRe.FindStringIndex(base)
+	if match == nil {
+		return ""
+	}
+	show := strings.TrimSpace(base[:match[0]])
+	return strings.Trim(show, " -._")
+}
+
+func movieTitleCandidate(task Task, base string) string {
+	candidates := []string{}
+	if task.InputParent != "" {
+		candidates = append(candidates, filepath.Base(task.InputParent))
+	}
+	if task.InputRelPath != "" {
+		dir := filepath.Dir(filepath.FromSlash(task.InputRelPath))
+		if dir != "." {
+			candidates = append(candidates, filepath.Base(dir))
+		}
+	}
+	candidates = append(candidates, base)
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate) == "" || taskEpisodeRe.MatchString(candidate) {
+			continue
+		}
+		if taskMovieFolderQualityTagRe.MatchString(candidate) && !strings.Contains(candidate, "19") && !strings.Contains(candidate, "20") {
+			continue
+		}
+		return candidate
+	}
+	return base
+}
+
+func movieDuplicateTitleKey(title string) string {
+	normalized := taskTextKey(title)
+	if normalized == "" {
+		return ""
+	}
+	if match := taskMovieYearPrefixRe.FindStringSubmatch(normalized); len(match) == 2 {
+		normalized = strings.TrimSpace(match[1])
+	}
+	fields := strings.Fields(normalized)
+	for len(fields) > 0 && movieDuplicateSuffix(fields[len(fields)-1]) {
+		fields = fields[:len(fields)-1]
+	}
+	return strings.Join(fields, " ")
+}
+
+func movieDuplicateSuffix(value string) bool {
+	switch value {
+	case "remux", "proper", "repack", "extended", "unrated", "theatrical", "directors", "director", "cut", "bluray", "blu", "ray", "bdrip", "webdl", "web", "webrip", "hdtv", "hdr", "dv", "uhd":
+		return true
+	default:
+		return taskMovieQualityRe.MatchString(value)
+	}
+}
+
+func taskKey(kind string, value string) string {
+	normalized := normalizeTaskPath(value)
+	if normalized == "" {
+		return ""
+	}
+	return kind + ":" + normalized
+}
+
+func normalizeTaskPath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = filepath.ToSlash(value)
+	for strings.Contains(value, "//") {
+		value = strings.ReplaceAll(value, "//", "/")
+	}
+	return strings.ToLower(value)
+}
+
+func taskTextKey(value string) string {
+	value = strings.ToLower(strings.NewReplacer("&", " and ").Replace(value))
+	value = taskTextSeparatorRe.ReplaceAllString(value, " ")
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func resetTaskForQueue(task *Task, inputPath string, outputDir string, now time.Time) {

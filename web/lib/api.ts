@@ -123,6 +123,7 @@ export type TranscodeTask = {
   oriModTime?: number;
   legacy?: boolean;
   media?: MediaItem;
+  hasDuplicate?: boolean;
 };
 
 export type TaskStatus = {

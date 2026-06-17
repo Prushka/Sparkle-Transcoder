@@ -68,6 +68,7 @@ type LoadState = {
 
 type MediaTaskIndex = Map<string, TranscodeTask>;
 type CurrentMediaIndex = Map<string, MediaItem>;
+type TaskDuplicateIndex = Map<string, number>;
 type NewVersionInfo = {
   originalSize: number;
   currentSize: number;
@@ -312,12 +313,13 @@ export function Dashboard() {
     return Math.max(0, limitLibraryItems(sortedMedia, nextMediaLimit, librarySort).length - visibleMedia.length);
   }, [hiddenMediaCount, librarySort, nextMediaLimit, sortedMedia, visibleMedia.length]);
   const mediaTaskIndex = React.useMemo(() => buildMediaTaskIndex(state.tasks), [state.tasks]);
+  const taskDuplicateIndex = React.useMemo(() => buildTaskDuplicateIndex(state.tasks), [state.tasks]);
   const currentMediaIndex = React.useMemo(() => buildCurrentMediaIndex(state.media), [state.media]);
   const taskCodecOptions = React.useMemo(() => taskOptions(state.tasks, taskCodecs), [state.tasks]);
   const taskSubtitleOptions = React.useMemo(() => taskOptions(state.tasks, taskSubtitleLanguages), [state.tasks]);
   const filteredTasks = React.useMemo(
-    () => filterTasks(state.tasks, taskQuery, taskStatusFilters, codecFilters, subtitleFilters, currentMediaIndex),
-    [codecFilters, currentMediaIndex, state.tasks, subtitleFilters, taskQuery, taskStatusFilters]
+    () => filterTasks(state.tasks, taskQuery, taskStatusFilters, codecFilters, subtitleFilters, currentMediaIndex, taskDuplicateIndex),
+    [codecFilters, currentMediaIndex, state.tasks, subtitleFilters, taskDuplicateIndex, taskQuery, taskStatusFilters]
   );
   const visibleTasks = React.useMemo(() => filteredTasks.slice(0, taskLimit), [filteredTasks, taskLimit]);
   const runningFilteredTaskCount = React.useMemo(() => filteredTasks.filter(isInProgressTask).length, [filteredTasks]);
@@ -2178,6 +2180,16 @@ function buildCurrentMediaIndex(items: MediaItem[]) {
   return index;
 }
 
+function buildTaskDuplicateIndex(tasks: TranscodeTask[]) {
+  const counts = new Map<string, number>();
+  for (const task of tasks) {
+    for (const key of replacementTaskKeys(task)) {
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
 function taskForMedia(item: MediaItem, index: MediaTaskIndex) {
   for (const key of mediaKeys(item)) {
     const task = index.get(key);
@@ -2399,11 +2411,12 @@ function filterTasks(
   taskStatusFilters: TriStateFilters,
   codecFilters: TriStateFilters,
   subtitleFilters: TriStateFilters,
-  currentMediaIndex: CurrentMediaIndex
+  currentMediaIndex: CurrentMediaIndex,
+  taskDuplicateIndex: TaskDuplicateIndex
 ) {
   return tasks.filter((task) => {
     if (!taskMatchesQuery(task, query)) return false;
-    if (!taskMatchesStatusFilters(task, taskStatusFilters, currentMediaIndex)) return false;
+    if (!taskMatchesStatusFilters(task, taskStatusFilters, currentMediaIndex, taskDuplicateIndex)) return false;
     const codecs = taskCodecs(task);
     if (!taskMatchesCodecFilters(codecs, codecFilters)) return false;
     const subtitles = taskSubtitleLanguages(task);
@@ -2426,14 +2439,19 @@ function triStateFiltersByState(filters: TriStateFilters, state: TriStateFilterS
     .map(([option]) => option);
 }
 
-function taskMatchesStatusFilters(task: TranscodeTask, filters: TriStateFilters, currentMediaIndex: CurrentMediaIndex) {
+function taskMatchesStatusFilters(
+  task: TranscodeTask,
+  filters: TriStateFilters,
+  currentMediaIndex: CurrentMediaIndex,
+  taskDuplicateIndex: TaskDuplicateIndex
+) {
   const included = triStateFiltersByState(filters, "include");
   const excluded = triStateFiltersByState(filters, "exclude");
   const inProgress = isInProgressTask(task);
   const completed = task.state === "complete";
   const newVersion = taskHasNewVersion(task, currentMediaIndex);
   const hasStoryboards = taskHasStoryboards(task);
-  const hasDuplicate = taskHasDuplicateMedia(task, currentMediaIndex);
+  const hasDuplicate = taskHasDuplicateJob(task, taskDuplicateIndex);
   if (included.includes(IN_PROGRESS_FILTER) && !inProgress) return false;
   if (excluded.includes(IN_PROGRESS_FILTER) && inProgress) return false;
   if (included.includes(COMPLETED_FILTER) && !completed) return false;
@@ -2451,8 +2469,12 @@ function taskHasStoryboards(task: TranscodeTask) {
   return Boolean(task.files?.["storyboard.vtt"]);
 }
 
-function taskHasDuplicateMedia(task: TranscodeTask, index: CurrentMediaIndex) {
-  return Boolean(mediaForTask(task, index)?.hasDuplicate);
+function taskHasDuplicateJob(task: TranscodeTask, index: TaskDuplicateIndex) {
+  if (task.hasDuplicate) return true;
+  for (const key of replacementTaskKeys(task)) {
+    if ((index.get(key) ?? 0) > 1) return true;
+  }
+  return false;
 }
 
 function taskMatchesCodecFilters(codecs: string[], filters: TriStateFilters) {
@@ -2608,7 +2630,8 @@ function mergeTaskDetails(next: TranscodeTask[], current: TranscodeTask[]) {
       ...normalized,
       files: normalized.files ?? existing.files,
       streams: normalized.streams ?? existing.streams,
-      subtitleLanguages: normalized.subtitleLanguages ?? existing.subtitleLanguages
+      subtitleLanguages: normalized.subtitleLanguages ?? existing.subtitleLanguages,
+      hasDuplicate: normalized.hasDuplicate ?? existing.hasDuplicate
     };
   });
 }
@@ -2636,7 +2659,8 @@ function normalizeTaskUpdate(task: TranscodeTask): TranscodeTask {
     duration: task.duration,
     width: task.width,
     height: task.height,
-    files: task.files
+    files: task.files,
+    hasDuplicate: task.hasDuplicate
   };
 }
 

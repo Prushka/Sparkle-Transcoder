@@ -130,6 +130,181 @@ func TestRefreshIncludesTaskDetails(t *testing.T) {
 	}
 }
 
+func TestRefreshMarksDuplicateTasksWithSameMediaID(t *testing.T) {
+	output := t.TempDir()
+	now := time.Now().UTC()
+	tasks := []Task{
+		{
+			ID:        "first",
+			MediaID:   "media-1",
+			Input:     "Example Show - S01E01 - Pilot.mkv",
+			OutputDir: filepath.Join(output, "first"),
+			State:     StateComplete,
+			Params:    Params{},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "second",
+			MediaID:   "media-1",
+			Input:     "Example Show - S01E01 - Pilot.mkv",
+			OutputDir: filepath.Join(output, "second"),
+			State:     StateComplete,
+			Params:    Params{},
+			CreatedAt: now,
+			UpdatedAt: now.Add(time.Second),
+		},
+	}
+	for i := range tasks {
+		if err := writeTask(&tasks[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := &Store{cfg: &config.Config{Output: output}}
+	if err := store.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("tasks = %d, want 2", len(got))
+	}
+	for _, task := range got {
+		if !task.HasDuplicate {
+			t.Fatalf("%s HasDuplicate = false, want true", task.ID)
+		}
+	}
+}
+
+func TestRefreshMarksDuplicateEpisodeTasksByIdentity(t *testing.T) {
+	output := t.TempDir()
+	now := time.Now().UTC()
+	tasks := []Task{
+		{
+			ID:           "first",
+			InputPath:    filepath.Join("O:\\", "Managed-Videos", "Anime", "Wistoria - Wand and Sword", "Season 2", "Wistoria - Wand and Sword - S02E08 - Teachings WEBRip-2160p.mkv"),
+			InputRelPath: "Anime/Wistoria - Wand and Sword/Season 2/Wistoria - Wand and Sword - S02E08 - Teachings WEBRip-2160p.mkv",
+			Input:        "Wistoria - Wand and Sword - S02E08 - Teachings WEBRip-2160p.mkv",
+			OutputDir:    filepath.Join(output, "first"),
+			State:        StateComplete,
+			Params:       Params{},
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		},
+		{
+			ID:           "second",
+			InputPath:    filepath.Join("O:\\", "Managed-Videos", "Anime-Alt", "Wistoria - Wand and Sword", "Season 2", "Wistoria - Wand and Sword - S02E08 - Teachings Remux.mkv"),
+			InputRelPath: "Anime-Alt/Wistoria - Wand and Sword/Season 2/Wistoria - Wand and Sword - S02E08 - Teachings Remux.mkv",
+			Input:        "Wistoria - Wand and Sword - S02E08 - Teachings Remux.mkv",
+			OutputDir:    filepath.Join(output, "second"),
+			State:        StateComplete,
+			Params:       Params{},
+			CreatedAt:    now,
+			UpdatedAt:    now.Add(time.Second),
+		},
+		{
+			ID:           "unique",
+			InputRelPath: "Anime/Wistoria - Wand and Sword/Season 2/Wistoria - Wand and Sword - S02E09 - Next.mkv",
+			Input:        "Wistoria - Wand and Sword - S02E09 - Next.mkv",
+			OutputDir:    filepath.Join(output, "unique"),
+			State:        StateComplete,
+			Params:       Params{},
+			CreatedAt:    now,
+			UpdatedAt:    now.Add(2 * time.Second),
+		},
+	}
+	for i := range tasks {
+		if err := writeTask(&tasks[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := &Store{cfg: &config.Config{Output: output}}
+	if err := store.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicates := map[string]bool{}
+	for _, task := range got {
+		duplicates[task.ID] = task.HasDuplicate
+	}
+	if !duplicates["first"] || !duplicates["second"] {
+		t.Fatalf("episode duplicate flags = %+v, want first and second true", duplicates)
+	}
+	if duplicates["unique"] {
+		t.Fatalf("unique episode marked duplicate: %+v", duplicates)
+	}
+}
+
+func TestRefreshMarksDuplicateMovieTasksByTitle(t *testing.T) {
+	output := t.TempDir()
+	now := time.Now().UTC()
+	tasks := []Task{
+		{
+			ID:           "first",
+			InputParent:  filepath.Join("O:\\", "Managed-Videos", "Movies", "Example Movie (2026)"),
+			InputPath:    filepath.Join("O:\\", "Managed-Videos", "Movies", "Example Movie (2026)", "Example Movie (2026).mkv"),
+			InputRelPath: "Movies/Example Movie (2026)/Example Movie (2026).mkv",
+			Input:        "Example Movie (2026).mkv",
+			OutputDir:    filepath.Join(output, "first"),
+			State:        StateComplete,
+			Params:       Params{},
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		},
+		{
+			ID:           "second",
+			InputParent:  filepath.Join("O:\\", "Managed-Videos", "Movies", "Example Movie (2026) Remux"),
+			InputPath:    filepath.Join("O:\\", "Managed-Videos", "Movies", "Example Movie (2026) Remux", "Example Movie (2026) Remux.mkv"),
+			InputRelPath: "Movies/Example Movie (2026) Remux/Example Movie (2026) Remux.mkv",
+			Input:        "Example Movie (2026) Remux.mkv",
+			OutputDir:    filepath.Join(output, "second"),
+			State:        StateComplete,
+			Params:       Params{},
+			CreatedAt:    now,
+			UpdatedAt:    now.Add(time.Second),
+		},
+		{
+			ID:           "unique",
+			InputParent:  filepath.Join("O:\\", "Managed-Videos", "Movies", "Other Movie (2026)"),
+			InputRelPath: "Movies/Other Movie (2026)/Other Movie (2026).mkv",
+			Input:        "Other Movie (2026).mkv",
+			OutputDir:    filepath.Join(output, "unique"),
+			State:        StateComplete,
+			Params:       Params{},
+			CreatedAt:    now,
+			UpdatedAt:    now.Add(2 * time.Second),
+		},
+	}
+	for i := range tasks {
+		if err := writeTask(&tasks[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := &Store{cfg: &config.Config{Output: output}}
+	if err := store.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.List(ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicates := map[string]bool{}
+	for _, task := range got {
+		duplicates[task.ID] = task.HasDuplicate
+	}
+	if !duplicates["first"] || !duplicates["second"] {
+		t.Fatalf("movie duplicate flags = %+v, want first and second true", duplicates)
+	}
+	if duplicates["unique"] {
+		t.Fatalf("unique movie marked duplicate: %+v", duplicates)
+	}
+}
+
 func TestFailPersistsErrorReason(t *testing.T) {
 	output := t.TempDir()
 	task := &Task{

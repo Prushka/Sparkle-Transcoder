@@ -63,6 +63,7 @@ type Task struct {
 	OriModTime     int64               `json:"oriModTime,omitempty"`
 	Legacy         bool                `json:"legacy,omitempty"`
 	Media          *media.Item         `json:"media,omitempty"`
+	HasDuplicate   bool                `json:"hasDuplicate,omitempty"`
 }
 
 type Stream struct {
