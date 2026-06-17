@@ -2629,8 +2629,7 @@ function mergeTaskDetails(next: TranscodeTask[], current: TranscodeTask[]) {
       ...normalized,
       files: normalized.files ?? existing.files,
       streams: normalized.streams ?? existing.streams,
-      subtitleLanguages: normalized.subtitleLanguages ?? existing.subtitleLanguages,
-      hasDuplicate: normalized.hasDuplicate ?? existing.hasDuplicate
+      subtitleLanguages: normalized.subtitleLanguages ?? existing.subtitleLanguages
     };
   });
 }
@@ -2658,8 +2657,7 @@ function normalizeTaskUpdate(task: TranscodeTask): TranscodeTask {
     duration: task.duration,
     width: task.width,
     height: task.height,
-    files: task.files,
-    hasDuplicate: task.hasDuplicate
+    files: task.files
   };
 }
 
