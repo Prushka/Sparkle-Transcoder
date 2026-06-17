@@ -2183,7 +2183,7 @@ function buildCurrentMediaIndex(items: MediaItem[]) {
 function buildTaskDuplicateIndex(tasks: TranscodeTask[]) {
   const counts = new Map<string, number>();
   for (const task of tasks) {
-    for (const key of replacementTaskKeys(task)) {
+    for (const key of duplicateTaskKeys(task)) {
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
   }
@@ -2470,8 +2470,7 @@ function taskHasStoryboards(task: TranscodeTask) {
 }
 
 function taskHasDuplicateJob(task: TranscodeTask, index: TaskDuplicateIndex) {
-  if (task.hasDuplicate) return true;
-  for (const key of replacementTaskKeys(task)) {
+  for (const key of duplicateTaskKeys(task)) {
     if ((index.get(key) ?? 0) > 1) return true;
   }
   return false;
@@ -2896,6 +2895,95 @@ function replacementTaskKeys(task: TranscodeTask) {
     keys.push(episodeKey(episode.show, episode.season, episode.episode));
   }
   return uniqueKeys(keys);
+}
+
+function duplicateTaskKeys(task: TranscodeTask) {
+  const taskFile = task.input || fileNameFromPath(task.inputPath) || fileNameFromPath(task.inputRelPath);
+  const keys = [...replacementTaskKeys(task), mediaDuplicateTaskKey(task.media), fileDuplicateTaskKey(task, taskFile)];
+  return uniqueKeys(keys);
+}
+
+function mediaDuplicateTaskKey(item?: MediaItem) {
+  if (!item) return "";
+  if (item.kind === "episode" && item.season != null && item.episode != null) {
+    return episodeKey(item.show || showFromEpisodeFile(item.fileName) || item.title, item.season, item.episode);
+  }
+  if (item.kind === "movie") {
+    const title = movieDuplicateTitleKey(item.title || item.fileName);
+    return title ? `movie:${title}` : "";
+  }
+  return "";
+}
+
+function fileDuplicateTaskKey(task: TranscodeTask, file?: string) {
+  if (!file) return "";
+  const base = stripMediaExtension(fileNameFromPath(file) || file);
+  const episode = parseEpisodeIdentity(base);
+  if (episode) return episodeKey(episode.show, episode.season, episode.episode);
+  const title = movieDuplicateTitleKey(movieTitleCandidate(task, base));
+  return title ? `movie:${title}` : "";
+}
+
+function showFromEpisodeFile(value?: string) {
+  const base = stripMediaExtension(fileNameFromPath(value) || value);
+  const match = base.match(/^(.*?)\s*[- ]*\s*S\d{1,2}E\d{1,3}\b/i);
+  return match ? match[1].trim().replace(/[-._\s]+$/g, "") : "";
+}
+
+function movieTitleCandidate(task: TranscodeTask, base: string) {
+  const candidates = [fileNameFromPath(task.inputParent), parentNameFromPath(task.inputRelPath), base];
+  for (const candidate of candidates) {
+    const trimmed = candidate.trim();
+    if (!trimmed || /S\d{1,2}E\d{1,3}\b/i.test(trimmed)) continue;
+    if (/\b(?:480|576|720|1080|2160|4320)p\b/i.test(trimmed) && !/\b(?:19|20)\d{2}\b/.test(trimmed)) continue;
+    return trimmed;
+  }
+  return base;
+}
+
+function parentNameFromPath(value?: string) {
+  const normalized = value?.replace(/\\/g, "/") ?? "";
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.length >= 2 ? parts[parts.length - 2] : "";
+}
+
+function movieDuplicateTitleKey(title: string) {
+  let normalized = normalizeTitle(title);
+  if (!normalized) return "";
+  const yearMatch = normalized.match(/^(.*\b(?:19|20)\d{2}\b)/);
+  if (yearMatch) normalized = yearMatch[1].trim();
+  const fields = normalized.split(/\s+/).filter(Boolean);
+  while (fields.length && duplicateMovieSuffix(fields[fields.length - 1])) {
+    fields.pop();
+  }
+  return fields.join(" ");
+}
+
+function duplicateMovieSuffix(value: string) {
+  return (
+    [
+      "remux",
+      "proper",
+      "repack",
+      "extended",
+      "unrated",
+      "theatrical",
+      "directors",
+      "director",
+      "cut",
+      "bluray",
+      "blu",
+      "ray",
+      "bdrip",
+      "webdl",
+      "web",
+      "webrip",
+      "hdtv",
+      "hdr",
+      "dv",
+      "uhd"
+    ].includes(value) || /^(?:480|576|720|1080|2160|4320)p?$/.test(value)
+  );
 }
 
 function itemsForShow(items: MediaItem[], showName: string) {
