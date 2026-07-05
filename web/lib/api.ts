@@ -88,6 +88,7 @@ export type TaskParams = {
   enableEncode?: boolean;
   enableSprites?: boolean;
   requireSubtitles?: boolean;
+  burnInSubtitles?: boolean;
   copySubtitleSidecars?: boolean;
   encoders?: string[];
   videoExt?: string;

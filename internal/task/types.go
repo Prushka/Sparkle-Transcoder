@@ -24,6 +24,7 @@ type Params struct {
 	EnableEncode         *bool    `json:"enableEncode,omitempty"`
 	EnableSprites        *bool    `json:"enableSprites,omitempty"`
 	RequireSubtitles     *bool    `json:"requireSubtitles,omitempty"`
+	BurnInSubtitles      *bool    `json:"burnInSubtitles,omitempty"`
 	Encoders             []string `json:"encoders,omitempty"`
 	VideoExt             string   `json:"videoExt,omitempty"`
 	Quality              string   `json:"quality,omitempty"`

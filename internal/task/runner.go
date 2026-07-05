@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"sparkle-transcoder/internal/config"
 	"sparkle-transcoder/internal/executil"
@@ -89,6 +90,9 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 		return err
 	}
 
+	if taskBurnInSubtitles(task) && task.Params.EnableEncode != nil && !*task.Params.EnableEncode {
+		return fmt.Errorf("burn-in subtitles require video encoding; enable encode")
+	}
 	if task.Params.ExtractStreams == nil || *task.Params.ExtractStreams {
 		if err := r.extractStreams(ctx, task, task.InputPath, subtitleType); err != nil {
 			if err := optionalRunnerWarning(ctx, task, "subtitle extraction", err); err != nil {
@@ -425,6 +429,9 @@ func (r *Runner) extractExternalSubtitles(ctx context.Context, task *Task) error
 }
 
 func (r *Runner) ffmpegCopyOnly(ctx context.Context, task *Task) error {
+	if taskBurnInSubtitles(task) {
+		return fmt.Errorf("burn-in subtitles require video encoding; disable fast path")
+	}
 	outputFile := r.outputJoin(task, fmt.Sprintf("hevc.%s", task.Params.VideoExt))
 	args := []string{
 		"-y",
@@ -449,6 +456,10 @@ func (r *Runner) ffmpegCopyOnly(ctx context.Context, task *Task) error {
 
 func (r *Runner) handbrakeTranscode(ctx context.Context, task *Task) error {
 	task.EncodedExt = task.Params.VideoExt
+	burnSubtitle, err := r.prepareBurnInSubtitle(ctx, task)
+	if err != nil {
+		return err
+	}
 	var mu sync.Mutex
 	g, ctx := errgroup.WithContext(ctx)
 	for _, encoder := range task.Params.Encoders {
@@ -484,6 +495,9 @@ func (r *Runner) handbrakeTranscode(ctx context.Context, task *Task) error {
 			if tune != "" {
 				args = append(args, "--encoder-tune", tune)
 			}
+			if burnSubtitle != nil {
+				args = append(args, burnSubtitle.handbrakeArgs()...)
+			}
 			if _, err := r.runWithMediaSource(ctx, task.InputPath, r.cfg.HandbrakeCli, args...); err != nil {
 				return err
 			}
@@ -498,6 +512,150 @@ func (r *Runner) handbrakeTranscode(ctx context.Context, task *Task) error {
 	}
 	task.UpdatedAt = time.Now().UTC()
 	return r.writeTask(task)
+}
+
+type burnInSubtitle struct {
+	path     string
+	format   string
+	language string
+}
+
+func taskBurnInSubtitles(task *Task) bool {
+	return task != nil && task.Params.BurnInSubtitles != nil && *task.Params.BurnInSubtitles
+}
+
+func (r *Runner) prepareBurnInSubtitle(ctx context.Context, task *Task) (*burnInSubtitle, error) {
+	if !taskBurnInSubtitles(task) {
+		return nil, nil
+	}
+	subtitle, ok := selectBurnInSubtitle(task)
+	if !ok {
+		return nil, fmt.Errorf("burn-in subtitles enabled but no ASS, VTT, or SRT subtitle was found for %s", task.Input)
+	}
+	if subtitle.format != "vtt" {
+		return &subtitle, nil
+	}
+	assPath := strings.TrimSuffix(subtitle.path, filepath.Ext(subtitle.path)) + ".burn.ass"
+	if _, err := r.exec.Run(ctx, r.cfg.Ffmpeg, "-y", "-i", subtitle.path, "-c:s", "ass", assPath); err != nil {
+		return nil, err
+	}
+	subtitle.path = assPath
+	subtitle.format = "ass"
+	return &subtitle, nil
+}
+
+func selectBurnInSubtitle(task *Task) (burnInSubtitle, bool) {
+	var best burnInSubtitle
+	maxInt := int(^uint(0) >> 1)
+	bestLanguageRank := maxInt
+	bestFormatRank := maxInt
+	bestIndex := maxInt
+	for i, stream := range task.Streams {
+		if stream.CodecType != subtitleType || stream.Location == "" {
+			continue
+		}
+		format, ok := burnInSubtitleFormat(stream)
+		if !ok {
+			continue
+		}
+		language := firstNonEmpty(stream.Language, languageFromSubtitleName(stream.Location), "und")
+		languageRank := burnInSubtitleLanguageRank(language)
+		formatRank := burnInSubtitleFormatRank(format)
+		if languageRank > bestLanguageRank || (languageRank == bestLanguageRank && formatRank > bestFormatRank) || (languageRank == bestLanguageRank && formatRank == bestFormatRank && i > bestIndex) {
+			continue
+		}
+		best = burnInSubtitle{
+			path:     taskOutputLocation(task, stream.Location),
+			format:   format,
+			language: handbrakeSubtitleLanguage(language),
+		}
+		bestLanguageRank = languageRank
+		bestFormatRank = formatRank
+		bestIndex = i
+	}
+	return best, bestIndex != maxInt
+}
+
+func burnInSubtitleFormat(stream Stream) (string, bool) {
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(stream.Location)), ".")
+	codec := strings.ToLower(strings.TrimSpace(stream.CodecName))
+	switch {
+	case ext == "ass" || ext == "ssa" || codec == "ass" || codec == "ssa":
+		return "ass", true
+	case ext == "vtt" || codec == "webvtt":
+		return "vtt", true
+	case ext == "srt" || codec == "subrip":
+		return "srt", true
+	default:
+		return "", false
+	}
+}
+
+func burnInSubtitleFormatRank(format string) int {
+	switch format {
+	case "ass":
+		return 0
+	case "vtt":
+		return 1
+	case "srt":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func burnInSubtitleLanguageRank(language string) int {
+	switch normalizedSubtitleLanguage(language) {
+	case "eng":
+		return 0
+	case "chi":
+		return 1
+	case "rus":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func (s burnInSubtitle) handbrakeArgs() []string {
+	switch s.format {
+	case "srt":
+		return []string{"--srt-file", s.path, "--srt-codeset", "UTF-8", "--srt-lang", s.language, "--srt-burn=1"}
+	default:
+		return []string{"--ssa-file", s.path, "--ssa-lang", s.language, "--ssa-burn=1"}
+	}
+}
+
+func handbrakeSubtitleLanguage(language string) string {
+	if normalized := normalizedSubtitleLanguage(language); normalized != "" {
+		return normalized
+	}
+	language = strings.ToLower(strings.TrimSpace(language))
+	if len(language) == 3 && isASCIILetters(language) {
+		return language
+	}
+	return "und"
+}
+
+func normalizedSubtitleLanguage(language string) string {
+	language = strings.ToLower(strings.TrimSpace(language))
+	switch language {
+	case "en", "eng", "english":
+		return "eng"
+	case "zh", "zho", "chi", "chs", "cht", "cmn", "cn", "chinese":
+		return "chi"
+	case "ru", "rus", "russian":
+		return "rus"
+	default:
+		return ""
+	}
+}
+
+func taskOutputLocation(task *Task, location string) string {
+	if filepath.IsAbs(location) {
+		return location
+	}
+	return filepath.Join(task.OutputDir, location)
 }
 
 func (r *Runner) encoderSettings(encoder string) (cmd string, preset string, profile string, tune string, err error) {
@@ -861,12 +1019,45 @@ func nilSafeName(file *media.RelatedFile) string {
 }
 
 func languageFromSubtitleName(name string) string {
+	name = filepath.Base(name)
 	base := strings.TrimSuffix(name, filepath.Ext(name))
+	tokens := strings.FieldsFunc(base, func(r rune) bool {
+		return r == '.' || r == '-' || r == '_' || unicode.IsSpace(r)
+	})
+	for i := len(tokens) - 1; i >= 0; i-- {
+		token := safeName(tokens[i])
+		if looksLikeSubtitleLanguageToken(token) {
+			return token
+		}
+	}
 	parts := strings.Split(base, ".")
 	if len(parts) > 1 {
 		return safeName(parts[len(parts)-1])
 	}
 	return ""
+}
+
+func looksLikeSubtitleLanguageToken(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	if normalizedSubtitleLanguage(token) != "" {
+		return true
+	}
+	if len(token) != 2 && len(token) != 3 {
+		return false
+	}
+	return isASCIILetters(token)
+}
+
+func isASCIILetters(value string) bool {
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func appendUnique(values []string, value string) []string {

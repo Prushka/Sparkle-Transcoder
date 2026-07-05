@@ -69,6 +69,121 @@ func TestHandbrakeTranscodeRunsFromInputDirWithShortInputName(t *testing.T) {
 	t.Fatalf("args missing -o: %+v", calls[0].args)
 }
 
+func TestHandbrakeTranscodePrioritizesSubtitleLanguageBeforeFormat(t *testing.T) {
+	inputDir := t.TempDir()
+	input := filepath.Join(inputDir, "Example.mkv")
+	outputDir := t.TempDir()
+	exec := &spriteRecordingExec{}
+	runner := NewRunner(&config.Config{
+		HandbrakeCli: "HandBrakeCLI",
+		Av1Encoder:   "svt_av1_10bit",
+		Av1Preset:    "4",
+	}, nil, exec)
+	burnInSubtitles := true
+	task := &Task{
+		Input:     "Example.mkv",
+		InputPath: input,
+		OutputDir: outputDir,
+		Params: Params{
+			BurnInSubtitles: &burnInSubtitles,
+			Encoders:        []string{"av1"},
+			VideoExt:        "mp4",
+			Quality:         "20",
+			AudioKbps:       144,
+		},
+		Streams: []Stream{
+			{CodecType: subtitleType, CodecName: "ass", Location: "4-rus.ass", Language: "rus"},
+			{CodecType: subtitleType, CodecName: "webvtt", Location: "3-chi.vtt", Language: "chi"},
+			{CodecType: subtitleType, CodecName: "subrip", Location: "2-eng.srt", Language: "eng"},
+		},
+	}
+
+	if err := runner.handbrakeTranscode(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := exec.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1: %+v", len(calls), calls)
+	}
+	args := calls[0].args
+	if !hasArgPair(args, "--srt-file", filepath.Join(outputDir, "2-eng.srt")) {
+		t.Fatalf("args missing selected English SRT subtitle: %+v", args)
+	}
+	if !hasArgPair(args, "--srt-lang", "eng") || !hasArg(args, "--srt-burn=1") {
+		t.Fatalf("args missing SRT burn settings: %+v", args)
+	}
+	if hasArg(args, "--subtitle") {
+		for i, arg := range args {
+			if arg == "--subtitle" && i+1 < len(args) && args[i+1] != "none" {
+				t.Fatalf("unexpected subtitle selection args: %+v", args)
+			}
+		}
+	}
+}
+
+func TestHandbrakeTranscodeConvertsVTTBurnInSubtitle(t *testing.T) {
+	inputDir := t.TempDir()
+	input := filepath.Join(inputDir, "Example.mkv")
+	outputDir := t.TempDir()
+	exec := &spriteRecordingExec{}
+	runner := NewRunner(&config.Config{
+		Ffmpeg:       "ffmpeg",
+		HandbrakeCli: "HandBrakeCLI",
+		Av1Encoder:   "svt_av1_10bit",
+		Av1Preset:    "4",
+	}, nil, exec)
+	burnInSubtitles := true
+	task := &Task{
+		Input:     "Example.mkv",
+		InputPath: input,
+		OutputDir: outputDir,
+		Params: Params{
+			BurnInSubtitles: &burnInSubtitles,
+			Encoders:        []string{"av1"},
+			VideoExt:        "mp4",
+			Quality:         "20",
+			AudioKbps:       144,
+		},
+		Streams: []Stream{
+			{CodecType: subtitleType, CodecName: "webvtt", Location: "2-eng.vtt"},
+			{CodecType: subtitleType, CodecName: "subrip", Location: "3-eng.srt"},
+		},
+	}
+
+	if err := runner.handbrakeTranscode(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := exec.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2: %+v", len(calls), calls)
+	}
+	vttPath := filepath.Join(outputDir, "2-eng.vtt")
+	assPath := filepath.Join(outputDir, "2-eng.burn.ass")
+	if calls[0].name != "ffmpeg" || !reflect.DeepEqual(calls[0].args, []string{"-y", "-i", vttPath, "-c:s", "ass", assPath}) {
+		t.Fatalf("vtt conversion call = %+v, want ffmpeg conversion", calls[0])
+	}
+	args := calls[1].args
+	if !hasArgPair(args, "--ssa-file", assPath) || !hasArgPair(args, "--ssa-lang", "eng") || !hasArg(args, "--ssa-burn=1") {
+		t.Fatalf("args missing converted VTT burn settings: %+v", args)
+	}
+}
+
+func TestLanguageFromSubtitleNameSupportsDashCodes(t *testing.T) {
+	cases := map[string]string{
+		"2-eng.vtt":         "eng",
+		"Example.en.srt":    "en",
+		"Movie.zh-Hans.ass": "zh",
+		"Dialog.vtt":        "",
+	}
+	for name, want := range cases {
+		if got := languageFromSubtitleName(name); got != want {
+			t.Fatalf("languageFromSubtitleName(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestGenerateSpritesSeeksBeforeFilteringAndCapsVTT(t *testing.T) {
 	outputDir := t.TempDir()
 	exec := &spriteRecordingExec{}
@@ -119,6 +234,24 @@ func TestGenerateSpritesSeeksBeforeFilteringAndCapsVTT(t *testing.T) {
 	if strings.Contains(vtt, "00:13:22.000") {
 		t.Fatalf("vtt includes a cue past the media duration:\n%s", vtt)
 	}
+}
+
+func hasArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasArgPair(args []string, key string, value string) bool {
+	for i, arg := range args {
+		if arg == key && i+1 < len(args) && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 type spriteRecordingExec struct {

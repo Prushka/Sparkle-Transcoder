@@ -1739,6 +1739,7 @@ function TaskDialog({
   const [enableEncode, setEnableEncode] = React.useState(true);
   const [enableSprites, setEnableSprites] = React.useState(true);
   const [requireSubtitles, setRequireSubtitles] = React.useState(true);
+  const [burnInSubtitles, setBurnInSubtitles] = React.useState(false);
   const [extractStreams, setExtractStreams] = React.useState(true);
   const [copySubtitleSidecars, setCopySubtitleSidecars] = React.useState(true);
   const [encoders, setEncoders] = React.useState<string[]>(["av1"]);
@@ -1754,6 +1755,7 @@ function TaskDialog({
     setEnableEncode(config.enableEncode);
     setEnableSprites(config.enableSprite);
     setRequireSubtitles(true);
+    setBurnInSubtitles(false);
     setCopySubtitleSidecars(config.copySubtitleSidecars);
     setEncoders(config.encoders?.length ? config.encoders : ["av1"]);
     setQuality(Number(config.quality || 20));
@@ -1763,6 +1765,12 @@ function TaskDialog({
   React.useEffect(() => {
     setQueueMode("replace");
   }, [selection?.items[0]?.id]);
+
+  React.useEffect(() => {
+    if (!burnInSubtitles) return;
+    setFast(false);
+    setEnableEncode(true);
+  }, [burnInSubtitles]);
 
   const allEncoders = ["av1", "hevc", "h264-10bit", "h264-8bit"];
   const isBulkSelection = Boolean(selection?.bulk);
@@ -1809,10 +1817,11 @@ function TaskDialog({
     }
     if (!actionSelection) return;
     onCreate(actionSelection, {
-      fast,
-      enableEncode,
+      fast: burnInSubtitles ? false : fast,
+      enableEncode: burnInSubtitles ? true : enableEncode,
       enableSprites,
       requireSubtitles,
+      burnInSubtitles,
       extractStreams,
       copySubtitleSidecars,
       encoders,
@@ -1829,17 +1838,17 @@ function TaskDialog({
     <Dialog open={!!selection} onOpenChange={onOpenChange}>
       <DialogContent
         className={cn(
-          "grid overflow-hidden",
+          "flex h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] flex-col overflow-hidden sm:max-h-[calc(100dvh-2rem)]",
           isBulkSelection
-            ? "h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] max-w-4xl grid-rows-[auto_minmax(0,1fr)_auto_auto] sm:h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-2rem)]"
-            : "max-h-[calc(100dvh-2rem)] max-w-xl grid-rows-[auto_minmax(0,auto)_auto_auto]"
+            ? "max-w-4xl sm:h-[calc(100dvh-2rem)]"
+            : "max-w-xl sm:h-auto"
         )}
       >
         <DialogHeader className="min-w-0 pr-8">
           <DialogTitle>{selection?.title ?? "Transcode"}</DialogTitle>
           <DialogDescription>{selection?.description}</DialogDescription>
         </DialogHeader>
-        <div className={cn("app-scrollbar grid min-h-0 min-w-0 gap-4 overflow-x-hidden overflow-y-auto pr-1", !isBulkSelection && "content-start")}>
+        <div className={cn("app-scrollbar grid min-h-0 min-w-0 flex-1 gap-4 overflow-x-hidden overflow-y-auto pr-1", !isBulkSelection && "content-start")}>
           {selection?.bulk ? (
             <div className="min-w-0">
               <div className="mb-2 text-sm font-medium">Queue mode</div>
@@ -1987,13 +1996,28 @@ function TaskDialog({
             </div>
           ) : null}
           <div className="grid gap-3 sm:grid-cols-2">
-            <ToggleLine label="Fast path" checked={fast} onCheckedChange={setFast} tip="Copy video and repackage audio through ffmpeg">
+            <ToggleLine
+              label="Fast path"
+              checked={fast}
+              onCheckedChange={setFast}
+              disabled={burnInSubtitles}
+              tip={burnInSubtitles ? "Burned subtitles require video encoding, so fast copy is disabled" : "Copy video and repackage audio through ffmpeg"}
+            >
               <Gauge className="size-4 text-primary" />
             </ToggleLine>
-            <ToggleLine label="Encode video" checked={enableEncode} onCheckedChange={setEnableEncode} tip="Run HandBrake or ffmpeg output generation">
+            <ToggleLine
+              label="Encode video"
+              checked={enableEncode}
+              onCheckedChange={setEnableEncode}
+              disabled={burnInSubtitles}
+              tip={burnInSubtitles ? "Burned subtitles require video encoding" : "Run HandBrake or ffmpeg output generation"}
+            >
               <Video className="size-4 text-primary" />
             </ToggleLine>
             <ToggleLine label="Require subtitles" checked={requireSubtitles} onCheckedChange={setRequireSubtitles} tip="Fail the task if no subtitle tracks are found">
+              <Subtitles className="size-4 text-primary" />
+            </ToggleLine>
+            <ToggleLine label="Burn subtitles" checked={burnInSubtitles} onCheckedChange={setBurnInSubtitles} tip="Hardcode one subtitle using English, Chinese, then Russian first; ASS, VTT, then SRT breaks ties">
               <Subtitles className="size-4 text-primary" />
             </ToggleLine>
             <ToggleLine label="Extract streams" checked={extractStreams} onCheckedChange={setExtractStreams} tip="Extract subtitle, attachment, and audio streams">
@@ -2064,23 +2088,25 @@ function ToggleLine({
   label,
   checked,
   onCheckedChange,
+  disabled,
   tip,
   children
 }: {
   label: string;
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
+  disabled?: boolean;
   tip: string;
   children: React.ReactNode;
 }) {
   return (
     <Tip content={tip}>
-      <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border p-3">
+      <label className={cn("flex items-center justify-between gap-3 rounded-lg border p-3", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
         <span className="flex items-center gap-2 text-sm font-medium">
           {children}
           {label}
         </span>
-        <Switch checked={checked} onCheckedChange={onCheckedChange} />
+        <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
       </label>
     </Tip>
   );
