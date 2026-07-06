@@ -93,6 +93,9 @@ func (r *Runner) Run(ctx context.Context, task *Task) error {
 	if taskBurnInSubtitles(task) && task.Params.EnableEncode != nil && !*task.Params.EnableEncode {
 		return fmt.Errorf("burn-in subtitles require video encoding; enable encode")
 	}
+	if taskHasTVEncoders(task) && task.Params.EnableEncode != nil && !*task.Params.EnableEncode {
+		return fmt.Errorf("TV codec outputs require video encoding; enable encode")
+	}
 	if task.Params.ExtractStreams == nil || *task.Params.ExtractStreams {
 		if err := r.extractStreams(ctx, task, task.InputPath, subtitleType); err != nil {
 			if err := optionalRunnerWarning(ctx, task, "subtitle extraction", err); err != nil {
@@ -432,6 +435,9 @@ func (r *Runner) ffmpegCopyOnly(ctx context.Context, task *Task) error {
 	if taskBurnInSubtitles(task) {
 		return fmt.Errorf("burn-in subtitles require video encoding; disable fast path")
 	}
+	if taskHasTVEncoders(task) {
+		return fmt.Errorf("TV codec outputs require video encoding; disable fast path")
+	}
 	outputFile := r.outputJoin(task, fmt.Sprintf("hevc.%s", task.Params.VideoExt))
 	args := []string{
 		"-y",
@@ -456,23 +462,29 @@ func (r *Runner) ffmpegCopyOnly(ctx context.Context, task *Task) error {
 
 func (r *Runner) handbrakeTranscode(ctx context.Context, task *Task) error {
 	task.EncodedExt = task.Params.VideoExt
-	burnSubtitle, err := r.prepareBurnInSubtitle(ctx, task)
+	variants := encoderVariants(task.Params.Encoders)
+	needsTVOutput := variantsContainTV(variants)
+	burnSubtitle, err := r.prepareBurnInSubtitle(ctx, task, taskBurnInSubtitles(task) || needsTVOutput)
+	if err != nil {
+		return err
+	}
+	aspectArgs, err := r.forceAspect16x9Args(ctx, task, needsTVOutput)
 	if err != nil {
 		return err
 	}
 	var mu sync.Mutex
 	g, ctx := errgroup.WithContext(ctx)
-	for _, encoder := range task.Params.Encoders {
-		encoder := strings.TrimSpace(encoder)
-		if encoder == "" {
+	for _, variant := range variants {
+		variant := variant
+		if variant.Name == "" {
 			continue
 		}
-		encoderCmd, preset, profile, tune, err := r.encoderSettings(encoder)
+		encoderCmd, preset, profile, tune, err := r.encoderSettings(variant.Base)
 		if err != nil {
 			return err
 		}
 		g.Go(func() error {
-			outputFile := r.outputJoin(task, fmt.Sprintf("%s.%s", encoder, task.Params.VideoExt))
+			outputFile := r.codecVideo(task, variant.Name)
 			args := []string{
 				"-i", mediaSourceArg(task.InputPath),
 				"-o", outputFile,
@@ -495,14 +507,17 @@ func (r *Runner) handbrakeTranscode(ctx context.Context, task *Task) error {
 			if tune != "" {
 				args = append(args, "--encoder-tune", tune)
 			}
-			if burnSubtitle != nil {
+			if variant.TV {
+				args = append(args, aspectArgs...)
+			}
+			if burnSubtitle != nil && (variant.TV || taskBurnInSubtitles(task)) {
 				args = append(args, burnSubtitle.handbrakeArgs()...)
 			}
 			if _, err := r.runWithMediaSource(ctx, task.InputPath, r.cfg.HandbrakeCli, args...); err != nil {
 				return err
 			}
 			mu.Lock()
-			task.EncodedCodecs = appendUnique(task.EncodedCodecs, encoder)
+			task.EncodedCodecs = appendUnique(task.EncodedCodecs, variant.Name)
 			mu.Unlock()
 			return nil
 		})
@@ -524,8 +539,106 @@ func taskBurnInSubtitles(task *Task) bool {
 	return task != nil && task.Params.BurnInSubtitles != nil && *task.Params.BurnInSubtitles
 }
 
-func (r *Runner) prepareBurnInSubtitle(ctx context.Context, task *Task) (*burnInSubtitle, error) {
-	if !taskBurnInSubtitles(task) {
+type encoderVariant struct {
+	Name string
+	Base string
+	TV   bool
+}
+
+const tvEncoderSuffix = "-tv"
+
+func encoderVariants(encoders []string) []encoderVariant {
+	variants := make([]encoderVariant, 0, len(encoders))
+	for _, encoder := range encoders {
+		variants = append(variants, encoderVariantFor(encoder))
+	}
+	return variants
+}
+
+func encoderVariantFor(encoder string) encoderVariant {
+	name := strings.TrimSpace(encoder)
+	tv := strings.HasSuffix(name, tvEncoderSuffix)
+	base := name
+	if tv {
+		base = strings.TrimSuffix(name, tvEncoderSuffix)
+	}
+	return encoderVariant{Name: name, Base: base, TV: tv}
+}
+
+func variantsContainTV(variants []encoderVariant) bool {
+	for _, variant := range variants {
+		if variant.TV {
+			return true
+		}
+	}
+	return false
+}
+
+func taskHasTVEncoders(task *Task) bool {
+	if task == nil {
+		return false
+	}
+	return variantsContainTV(encoderVariants(task.Params.Encoders))
+}
+
+func (r *Runner) forceAspect16x9Args(ctx context.Context, task *Task, enabled bool) ([]string, error) {
+	if !enabled {
+		return nil, nil
+	}
+	width, height, err := r.sourceVideoDimensions(ctx, task.InputPath)
+	if err != nil {
+		return nil, err
+	}
+	targetWidth, targetHeight := forceAspect16x9Canvas(width, height)
+	return []string{
+		"--crop-mode", "none",
+		"--non-anamorphic",
+		"--pad", fmt.Sprintf("width=%d:height=%d:color=black", targetWidth, targetHeight),
+	}, nil
+}
+
+func (r *Runner) sourceVideoDimensions(ctx context.Context, path string) (int, int, error) {
+	out, err := r.runWithMediaSource(ctx, path, r.cfg.Ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", mediaSourceArg(path))
+	if err != nil {
+		return 0, 0, err
+	}
+	width, height, ok := parseProbeDimensions(out)
+	if !ok {
+		return 0, 0, fmt.Errorf("unable to parse source video dimensions for %s from ffprobe output %q", filepath.Base(path), strings.TrimSpace(string(out)))
+	}
+	return width, height, nil
+}
+
+func forceAspect16x9Canvas(width int, height int) (int, int) {
+	if width <= 0 || height <= 0 {
+		return 0, 0
+	}
+	k := maxInt(ceilDiv(width, 16), ceilDiv(height, 9))
+	if k%2 != 0 {
+		k++
+	}
+	return 16 * k, 9 * k
+}
+
+func ceilDiv(value int, divisor int) int {
+	if divisor <= 0 {
+		return 0
+	}
+	if value <= 0 {
+		return 0
+	}
+	return (value + divisor - 1) / divisor
+}
+
+func maxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (r *Runner) prepareBurnInSubtitle(ctx context.Context, task *Task, enabled bool) (*burnInSubtitle, error) {
+	if !enabled {
 		return nil, nil
 	}
 	subtitle, ok := selectBurnInSubtitle(task)
@@ -680,7 +793,7 @@ func (r *Runner) mapAudioTracks(ctx context.Context, task *Task) error {
 			continue
 		}
 		for _, codec := range task.EncodedCodecs {
-			id := fmt.Sprintf("%s-%d-%s", codec, audio.Index, safeName(firstNonEmpty(audio.Language, "und")))
+			id := mappedAudioOutputBase(codec, audio)
 			output := r.outputJoin(task, fmt.Sprintf("%s.%s", id, task.Params.VideoExt))
 			if _, err := r.exec.Run(ctx, r.cfg.Ffmpeg, "-y", "-i", r.codecVideo(task, codec), "-i", r.outputJoin(task, audio.Location), "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "copy", "-shortest", output); err != nil {
 				return err
@@ -891,7 +1004,24 @@ func mediaSourceArg(sourcePath string) string {
 }
 
 func (r *Runner) codecVideo(task *Task, codec string) string {
-	return r.outputJoin(task, fmt.Sprintf("%s.%s", codec, task.Params.VideoExt))
+	return r.outputJoin(task, fmt.Sprintf("%s.%s", codecOutputBase(codec), task.Params.VideoExt))
+}
+
+func codecOutputBase(codec string) string {
+	variant := encoderVariantFor(codec)
+	if variant.TV {
+		return variant.Base + ".tv"
+	}
+	return variant.Base
+}
+
+func mappedAudioOutputBase(codec string, audio Stream) string {
+	variant := encoderVariantFor(codec)
+	id := fmt.Sprintf("%s-%d-%s", variant.Base, audio.Index, safeName(firstNonEmpty(audio.Language, "und")))
+	if variant.TV {
+		return id + ".tv"
+	}
+	return id
 }
 
 func (r *Runner) outputJoin(task *Task, parts ...string) string {

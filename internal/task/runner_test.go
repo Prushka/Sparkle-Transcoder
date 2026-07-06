@@ -170,6 +170,134 @@ func TestHandbrakeTranscodeConvertsVTTBurnInSubtitle(t *testing.T) {
 	}
 }
 
+func TestHandbrakeTranscodeAppliesTVSettingsPerEncoder(t *testing.T) {
+	inputDir := t.TempDir()
+	input := filepath.Join(inputDir, "Example.mkv")
+	outputDir := t.TempDir()
+	exec := &spriteRecordingExec{outputs: map[string][]byte{"ffprobe": []byte("640x480\r\n")}}
+	runner := NewRunner(&config.Config{
+		Ffprobe:         "ffprobe",
+		HandbrakeCli:    "HandBrakeCLI",
+		Av1Encoder:      "svt_av1_10bit",
+		Av1Preset:       "4",
+		HevcEncoder:     "nvenc_h265_10bit",
+		HevcPreset:      "slowest",
+		H2648BitEncoder: "x264",
+		H2648BitPreset:  "slow",
+	}, nil, exec)
+	task := &Task{
+		Input:     "Example.mkv",
+		InputPath: input,
+		OutputDir: outputDir,
+		Params: Params{
+			Encoders:  []string{"av1", "av1-tv", "hevc-tv", "h264-8bit"},
+			VideoExt:  "mp4",
+			Quality:   "20",
+			AudioKbps: 144,
+		},
+		Streams: []Stream{{CodecType: subtitleType, CodecName: "ass", Location: "2-eng.ass", Language: "eng"}},
+	}
+
+	if err := runner.handbrakeTranscode(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := exec.Calls()
+	if len(calls) != 5 {
+		t.Fatalf("calls = %d, want 5: %+v", len(calls), calls)
+	}
+	if calls[0].name != "ffprobe" || !hasArg(calls[0].args, "-select_streams") {
+		t.Fatalf("first call = %+v, want source dimension ffprobe", calls[0])
+	}
+	handbrakeByOutput := map[string]spriteExecCall{}
+	for _, call := range calls[1:] {
+		if call.name != "HandBrakeCLI" {
+			t.Fatalf("call command = %q, want HandBrakeCLI: %+v", call.name, call)
+		}
+		handbrakeByOutput[argValue(call.args, "-o")] = call
+	}
+	for _, name := range []string{"av1.mp4", "av1.tv.mp4", "hevc.tv.mp4", "h264-8bit.mp4"} {
+		if _, ok := handbrakeByOutput[filepath.Join(outputDir, name)]; !ok {
+			t.Fatalf("missing HandBrake output %s in calls: %+v", name, calls)
+		}
+	}
+	for _, name := range []string{"av1.tv.mp4", "hevc.tv.mp4"} {
+		args := handbrakeByOutput[filepath.Join(outputDir, name)].args
+		if !hasArgPair(args, "--crop-mode", "none") || !hasArg(args, "--non-anamorphic") || !hasArgPair(args, "--pad", "width=864:height=486:color=black") {
+			t.Fatalf("%s args missing 16:9 pad settings: %+v", name, args)
+		}
+		if !hasArgPair(args, "--ssa-file", filepath.Join(outputDir, "2-eng.ass")) || !hasArgPair(args, "--ssa-lang", "eng") || !hasArg(args, "--ssa-burn=1") {
+			t.Fatalf("%s args missing burn-in settings: %+v", name, args)
+		}
+	}
+	for _, name := range []string{"av1.mp4", "h264-8bit.mp4"} {
+		args := handbrakeByOutput[filepath.Join(outputDir, name)].args
+		if hasArg(args, "--pad") || hasArg(args, "--ssa-burn=1") {
+			t.Fatalf("%s args unexpectedly include TV settings: %+v", name, args)
+		}
+	}
+	gotCodecs := append([]string(nil), task.EncodedCodecs...)
+	sort.Strings(gotCodecs)
+	wantCodecs := []string{"av1", "av1-tv", "h264-8bit", "hevc-tv"}
+	if !reflect.DeepEqual(gotCodecs, wantCodecs) {
+		t.Fatalf("encoded codecs = %+v, want requested codec variants", task.EncodedCodecs)
+	}
+}
+
+func TestForceAspect16x9Canvas(t *testing.T) {
+	cases := []struct {
+		width      int
+		height     int
+		wantWidth  int
+		wantHeight int
+	}{
+		{width: 1920, height: 1080, wantWidth: 1920, wantHeight: 1080},
+		{width: 640, height: 480, wantWidth: 864, wantHeight: 486},
+		{width: 1920, height: 800, wantWidth: 1920, wantHeight: 1080},
+		{width: 1919, height: 1079, wantWidth: 1920, wantHeight: 1080},
+	}
+	for _, tc := range cases {
+		gotWidth, gotHeight := forceAspect16x9Canvas(tc.width, tc.height)
+		if gotWidth != tc.wantWidth || gotHeight != tc.wantHeight {
+			t.Fatalf("forceAspect16x9Canvas(%d, %d) = %dx%d, want %dx%d", tc.width, tc.height, gotWidth, gotHeight, tc.wantWidth, tc.wantHeight)
+		}
+	}
+}
+
+func TestMapAudioTracksUsesTVOutputsAndFilenames(t *testing.T) {
+	outputDir := t.TempDir()
+	exec := &spriteRecordingExec{}
+	runner := NewRunner(&config.Config{Ffmpeg: "ffmpeg"}, nil, exec)
+	task := &Task{
+		OutputDir:     outputDir,
+		EncodedCodecs: []string{"av1", "av1-tv"},
+		Params:        Params{VideoExt: "mp4"},
+		Streams:       []Stream{{CodecType: audioType, CodecName: "opus", Location: "1-eng.opus", Index: 1, Language: "eng"}},
+	}
+
+	if err := runner.mapAudioTracks(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := exec.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2: %+v", len(calls), calls)
+	}
+	want := map[string][]string{
+		filepath.Join(outputDir, "av1-1-eng.mp4"):    {"-y", "-i", filepath.Join(outputDir, "av1.mp4"), "-i", filepath.Join(outputDir, "1-eng.opus"), "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "copy", "-shortest", filepath.Join(outputDir, "av1-1-eng.mp4")},
+		filepath.Join(outputDir, "av1-1-eng.tv.mp4"): {"-y", "-i", filepath.Join(outputDir, "av1.tv.mp4"), "-i", filepath.Join(outputDir, "1-eng.opus"), "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "copy", "-shortest", filepath.Join(outputDir, "av1-1-eng.tv.mp4")},
+	}
+	for _, call := range calls {
+		wantArgs, ok := want[call.args[len(call.args)-1]]
+		if !ok {
+			t.Fatalf("unexpected mapped audio output call: %+v", call)
+		}
+		if !reflect.DeepEqual(call.args, wantArgs) {
+			t.Fatalf("mapped audio args = %+v, want %+v", call.args, wantArgs)
+		}
+	}
+}
+
 func TestLanguageFromSubtitleNameSupportsDashCodes(t *testing.T) {
 	cases := map[string]string{
 		"2-eng.vtt":         "eng",
@@ -254,9 +382,19 @@ func hasArgPair(args []string, key string, value string) bool {
 	return false
 }
 
+func argValue(args []string, key string) string {
+	for i, arg := range args {
+		if arg == key && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
 type spriteRecordingExec struct {
-	mu    sync.Mutex
-	calls []spriteExecCall
+	mu      sync.Mutex
+	calls   []spriteExecCall
+	outputs map[string][]byte
 }
 
 var _ executil.Runner = (*spriteRecordingExec)(nil)
@@ -271,14 +409,14 @@ func (e *spriteRecordingExec) Run(_ context.Context, name string, args ...string
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.calls = append(e.calls, spriteExecCall{name: name, args: append([]string(nil), args...)})
-	return nil, nil
+	return append([]byte(nil), e.outputs[name]...), nil
 }
 
 func (e *spriteRecordingExec) RunInDir(_ context.Context, dir string, name string, args ...string) ([]byte, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.calls = append(e.calls, spriteExecCall{dir: dir, name: name, args: append([]string(nil), args...)})
-	return nil, nil
+	return append([]byte(nil), e.outputs[name]...), nil
 }
 
 func (e *spriteRecordingExec) Calls() []spriteExecCall {

@@ -1739,7 +1739,6 @@ function TaskDialog({
   const [enableEncode, setEnableEncode] = React.useState(true);
   const [enableSprites, setEnableSprites] = React.useState(true);
   const [requireSubtitles, setRequireSubtitles] = React.useState(true);
-  const [burnInSubtitles, setBurnInSubtitles] = React.useState(false);
   const [extractStreams, setExtractStreams] = React.useState(true);
   const [copySubtitleSidecars, setCopySubtitleSidecars] = React.useState(true);
   const [encoders, setEncoders] = React.useState<string[]>(["av1"]);
@@ -1755,7 +1754,6 @@ function TaskDialog({
     setEnableEncode(config.enableEncode);
     setEnableSprites(config.enableSprite);
     setRequireSubtitles(true);
-    setBurnInSubtitles(false);
     setCopySubtitleSidecars(config.copySubtitleSidecars);
     setEncoders(config.encoders?.length ? config.encoders : ["av1"]);
     setQuality(Number(config.quality || 20));
@@ -1766,13 +1764,15 @@ function TaskDialog({
     setQueueMode("replace");
   }, [selection?.items[0]?.id]);
 
+  const selectedTVEncoder = encoders.some(isTVEncoder);
+
   React.useEffect(() => {
-    if (!burnInSubtitles) return;
+    if (!selectedTVEncoder) return;
     setFast(false);
     setEnableEncode(true);
-  }, [burnInSubtitles]);
+  }, [selectedTVEncoder]);
 
-  const allEncoders = ["av1", "hevc", "h264-10bit", "h264-8bit"];
+  const allEncoders = ["av1", "av1-tv", "hevc", "hevc-tv", "h264-10bit", "h264-10bit-tv", "h264-8bit", "h264-8bit-tv"];
   const isBulkSelection = Boolean(selection?.bulk);
   const effectiveQueueMode: QueueMode = selection?.bulk ? queueMode : "replace";
   const queueCreateMode: QueueCreateMode = effectiveQueueMode === "incomplete" ? "incomplete" : "replace";
@@ -1817,11 +1817,10 @@ function TaskDialog({
     }
     if (!actionSelection) return;
     onCreate(actionSelection, {
-      fast: burnInSubtitles ? false : fast,
-      enableEncode: burnInSubtitles ? true : enableEncode,
+      fast: selectedTVEncoder ? false : fast,
+      enableEncode: selectedTVEncoder ? true : enableEncode,
       enableSprites,
       requireSubtitles,
-      burnInSubtitles,
       extractStreams,
       copySubtitleSidecars,
       encoders,
@@ -2000,8 +1999,8 @@ function TaskDialog({
               label="Fast path"
               checked={fast}
               onCheckedChange={setFast}
-              disabled={burnInSubtitles}
-              tip={burnInSubtitles ? "Burned subtitles require video encoding, so fast copy is disabled" : "Copy video and repackage audio through ffmpeg"}
+              disabled={selectedTVEncoder}
+              tip={selectedTVEncoder ? "TV codec outputs require video encoding, so fast copy is disabled" : "Copy video and repackage audio through ffmpeg"}
             >
               <Gauge className="size-4 text-primary" />
             </ToggleLine>
@@ -2009,15 +2008,12 @@ function TaskDialog({
               label="Encode video"
               checked={enableEncode}
               onCheckedChange={setEnableEncode}
-              disabled={burnInSubtitles}
-              tip={burnInSubtitles ? "Burned subtitles require video encoding" : "Run HandBrake or ffmpeg output generation"}
+              disabled={selectedTVEncoder}
+              tip={selectedTVEncoder ? "TV codec outputs require video encoding" : "Run HandBrake or ffmpeg output generation"}
             >
               <Video className="size-4 text-primary" />
             </ToggleLine>
             <ToggleLine label="Require subtitles" checked={requireSubtitles} onCheckedChange={setRequireSubtitles} tip="Fail the task if no subtitle tracks are found">
-              <Subtitles className="size-4 text-primary" />
-            </ToggleLine>
-            <ToggleLine label="Burn subtitles" checked={burnInSubtitles} onCheckedChange={setBurnInSubtitles} tip="Hardcode one subtitle using English, Chinese, then Russian first; ASS, VTT, then SRT breaks ties">
               <Subtitles className="size-4 text-primary" />
             </ToggleLine>
             <ToggleLine label="Extract streams" checked={extractStreams} onCheckedChange={setExtractStreams} tip="Extract subtitle, attachment, and audio streams">
@@ -2037,7 +2033,7 @@ function TaskDialog({
               {allEncoders.map((encoder) => {
                 const active = encoders.includes(encoder);
                 return (
-                  <Tip content={`Toggle ${encoder} output`} key={encoder}>
+                  <Tip content={isTVEncoder(encoder) ? `Toggle ${encoderLabel(encoder)} output with burned subtitles and 16:9 padding` : `Toggle ${encoderLabel(encoder)} output`} key={encoder}>
                     <Button
                       type="button"
                       variant={active ? "default" : "outline"}
@@ -2045,7 +2041,7 @@ function TaskDialog({
                       onClick={() => setEncoders(active ? encoders.filter((value) => value !== encoder) : [...encoders, encoder])}
                       disabled={fast}
                     >
-                      {encoder}
+                      {encoderLabel(encoder)}
                     </Button>
                   </Tip>
                 );
@@ -2373,6 +2369,14 @@ function cloneTaskParams(params?: TaskParams): TaskParams {
     copySubtitleSidecars: source.copySubtitleSidecars ?? true,
     encoders: source.encoders ? [...source.encoders] : undefined
   };
+}
+
+function isTVEncoder(encoder: string) {
+  return encoder.endsWith("-tv");
+}
+
+function encoderLabel(encoder: string) {
+  return encoder.toUpperCase();
 }
 
 function originalMediaSize(task: TranscodeTask) {
