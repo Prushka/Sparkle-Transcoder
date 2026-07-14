@@ -46,6 +46,7 @@ type Item struct {
 	FileName     string        `json:"fileName"`
 	Ext          string        `json:"ext"`
 	Size         int64         `json:"size"`
+	CreatedAt    time.Time     `json:"createdAt"`
 	ModTime      time.Time     `json:"modTime"`
 	Poster       *RelatedFile  `json:"poster,omitempty"`
 	Fanart       *RelatedFile  `json:"fanart,omitempty"`
@@ -90,7 +91,7 @@ type ScanStatus struct {
 	FilesScanned   int        `json:"filesScanned"`
 }
 
-const currentIndexVersion = 2
+const currentIndexVersion = 3
 
 func NewIndex(root string) *Index {
 	return &Index{

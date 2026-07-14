@@ -99,6 +99,7 @@ const LIVE_TASK_POLL_INTERVAL_MS = 30000;
 const TASK_CANCEL_POLL_INTERVAL_MS = 1000;
 const TASK_CANCEL_TIMEOUT_MS = 120000;
 const LIBRARY_PAGE_SIZE = 300;
+const FALLBACK_MEDIA_CREATION_TIME = Date.UTC(2019, 0, 1);
 
 type TaskSelection = {
   title: string;
@@ -135,7 +136,7 @@ export function Dashboard() {
   const [query, setQuery] = React.useState("");
   const [kind, setKind] = React.useState("all");
   const [library, setLibrary] = React.useState("all");
-  const [librarySort, setLibrarySort] = React.useState<LibrarySort>("title");
+  const [librarySort, setLibrarySort] = React.useState<LibrarySort>("recent");
   const [selected, setSelected] = React.useState<TaskSelection | null>(null);
   const [activeTab, setActiveTab] = React.useState("library");
   const [busy, setBusy] = React.useState(false);
@@ -1847,7 +1848,7 @@ function TaskDialog({
           <DialogTitle>{selection?.title ?? "Transcode"}</DialogTitle>
           <DialogDescription>{selection?.description}</DialogDescription>
         </DialogHeader>
-        <div className={cn("app-scrollbar grid min-h-0 min-w-0 flex-1 gap-4 overflow-x-hidden overflow-y-auto pr-1", !isBulkSelection && "content-start")}>
+        <div className="app-scrollbar grid min-h-0 min-w-0 flex-1 content-start gap-4 overflow-x-hidden overflow-y-auto pr-1">
           {selection?.bulk ? (
             <div className="min-w-0">
               <div className="mb-2 text-sm font-medium">Queue mode</div>
@@ -2846,7 +2847,8 @@ function librarySortLabel(sort: LibrarySort) {
 function sortLibraryItems(items: MediaItem[], sort: LibrarySort) {
   const next = [...items];
   if (sort === "recent") {
-    return next.sort(compareMediaRecentlyAdded);
+    const now = Date.now();
+    return next.sort((a, b) => compareMediaRecentlyAdded(a, b, now));
   }
   return next.sort(compareMediaTitle);
 }
@@ -2885,21 +2887,24 @@ function compareMediaTitle(a: MediaItem, b: MediaItem) {
   return a.sortKey.localeCompare(b.sortKey) || a.fileName.localeCompare(b.fileName);
 }
 
-function compareMediaRecentlyAdded(a: MediaItem, b: MediaItem) {
-  return mediaModTime(b) - mediaModTime(a) || compareMediaTitle(a, b);
+function compareMediaRecentlyAdded(a: MediaItem, b: MediaItem, now: number) {
+  return mediaCreationTime(b, now) - mediaCreationTime(a, now) || compareMediaTitle(a, b);
 }
 
-function mediaModTime(item: MediaItem) {
-  const value = Date.parse(item.modTime);
-  return Number.isFinite(value) ? value : 0;
+function mediaCreationTime(item: MediaItem, now: number) {
+  const value = Date.parse(item.createdAt);
+  return Number.isFinite(value) && value <= now ? value : FALLBACK_MEDIA_CREATION_TIME;
 }
 
-function newestMediaModTime(items: MediaItem[]) {
-  return items.reduce((newest, item) => Math.max(newest, mediaModTime(item)), 0);
+function newestMediaCreationTime(items: MediaItem[], now: number) {
+  return items.reduce((newest, item) => Math.max(newest, mediaCreationTime(item, now)), FALLBACK_MEDIA_CREATION_TIME);
 }
 
-function newestShowModTime(seasons: Map<number, MediaItem[]>) {
-  return Array.from(seasons.values()).reduce((newest, items) => Math.max(newest, newestMediaModTime(items)), 0);
+function newestShowCreationTime(seasons: Map<number, MediaItem[]>, now: number) {
+  return Array.from(seasons.values()).reduce(
+    (newest, items) => Math.max(newest, newestMediaCreationTime(items, now)),
+    FALLBACK_MEDIA_CREATION_TIME
+  );
 }
 
 function isCompleteTask(task: TranscodeTask) {
@@ -3191,6 +3196,7 @@ function selectionMediaLabel(items: MediaItem[], count = items.length) {
 }
 
 function groupEpisodes(items: MediaItem[], sort: LibrarySort = "title") {
+  const now = Date.now();
   const shows = new Map<string, Map<number, MediaItem[]>>();
   for (const item of items) {
     const show = episodeShowName(item);
@@ -3203,7 +3209,7 @@ function groupEpisodes(items: MediaItem[], sort: LibrarySort = "title") {
   return Array.from(shows.entries())
     .sort(([aName, aSeasons], [bName, bSeasons]) =>
       sort === "recent"
-        ? newestShowModTime(bSeasons) - newestShowModTime(aSeasons) || aName.localeCompare(bName)
+        ? newestShowCreationTime(bSeasons, now) - newestShowCreationTime(aSeasons, now) || aName.localeCompare(bName)
         : aName.localeCompare(bName)
     )
     .map(([name, seasons]) => ({

@@ -315,6 +315,7 @@ func (s *Scanner) upsertVideo(idx *Index, path string, session *scanSession) err
 	if err != nil {
 		return err
 	}
+	item.CreatedAt = fileCreationTime(path, stat)
 	related := s.collectRelated(path, session)
 	item.Poster = firstRelated(related, RelatedPoster)
 	item.Fanart = firstRelated(related, RelatedFanart)
@@ -607,6 +608,11 @@ func (s *Scanner) readCache() (*Index, error) {
 	}
 	if idx.Dirs == nil {
 		idx.Dirs = map[string]DirectoryState{}
+	}
+	now := time.Now().UTC()
+	for id, item := range idx.Items {
+		item.CreatedAt = normalizeFileCreationTime(item.CreatedAt, now)
+		idx.Items[id] = item
 	}
 	annotateDuplicateMedia(idx)
 	return idx, nil

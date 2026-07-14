@@ -28,6 +28,14 @@ func TestScannerFullScanCollectsRelatedFiles(t *testing.T) {
 		t.Fatalf("items = %d, want 1", len(idx.Items))
 	}
 	item := onlyItem(idx)
+	stat, err := os.Stat(video)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCreatedAt := fileCreationTime(video, stat)
+	if !item.CreatedAt.Equal(wantCreatedAt) {
+		t.Fatalf("creation time = %s, want %s", item.CreatedAt, wantCreatedAt)
+	}
 	if item.Poster == nil {
 		t.Fatal("poster was not collected")
 	}

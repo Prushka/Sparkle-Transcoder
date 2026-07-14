@@ -35,6 +35,7 @@ export type MediaItem = {
   fileName: string;
   ext: string;
   size: number;
+  createdAt: string;
   modTime: string;
   poster?: RelatedFile;
   fanart?: RelatedFile;
