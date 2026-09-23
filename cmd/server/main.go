@@ -11,6 +11,7 @@ import (
 	"sparkle-transcoder/internal/api"
 	"sparkle-transcoder/internal/config"
 	"sparkle-transcoder/internal/executil"
+	"sparkle-transcoder/internal/lifecycle"
 	"sparkle-transcoder/internal/media"
 	"sparkle-transcoder/internal/task"
 
@@ -34,6 +35,9 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
+	if err := lifecycle.WatchShutdown(ctx, stop); err != nil {
+		log.Fatalf("managed shutdown: %v", err)
+	}
 
 	scanner := media.NewScanner(cfg)
 	if err := scanner.LoadCache(); err != nil {

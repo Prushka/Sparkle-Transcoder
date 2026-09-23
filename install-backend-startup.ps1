@@ -10,9 +10,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path $PSScriptRoot).Path
 $AppName = "Sparkle"
-$TrayScript = Join-Path $RepoRoot "launch-backend-tray.ps1"
-$IconPath = Join-Path $RepoRoot "assets\sparkle-transcoder.ico"
-$PowerShellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$AppPath = Join-Path $RepoRoot "bin\windows\Sparkle.exe"
 
 $ShortcutName = "$AppName.lnk"
 $LegacyShortcutNames = @("Sparkle Transcoder Backend.lnk")
@@ -40,27 +38,17 @@ function Remove-LegacyShortcuts {
 function New-BackendShortcut {
     param([string]$Path)
 
-    if (-not (Test-Path $TrayScript)) {
-        throw "Tray launcher not found at $TrayScript"
-    }
-
-    if (-not (Test-Path $IconPath)) {
-        throw "App icon not found at $IconPath"
-    }
-
-    if (-not (Test-Path $PowerShellExe)) {
-        throw "Windows PowerShell not found at $PowerShellExe"
-    }
+    if (-not (Test-Path -LiteralPath $AppPath)) { throw "Windows application not found at $AppPath" }
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
 
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($Path)
-    $shortcut.TargetPath = $PowerShellExe
-    $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$TrayScript`""
+    $shortcut.TargetPath = $AppPath
+    $shortcut.Arguments = "--repo-root `"$RepoRoot`""
     $shortcut.WorkingDirectory = $RepoRoot
     $shortcut.Description = "Start and manage Sparkle."
-    $shortcut.IconLocation = "$IconPath,0"
+    $shortcut.IconLocation = "$AppPath,0"
     $shortcut.Save()
 
     Write-Host "Created $Path"
@@ -73,6 +61,7 @@ if ($Remove) {
     return
 }
 
+& (Join-Path $RepoRoot "build-windows-app.ps1")
 Remove-LegacyShortcuts
 
 if (-not $NoStartup) {
@@ -84,5 +73,5 @@ if (-not $NoStartMenu) {
 }
 
 Write-Host ""
-Write-Host "Startup shortcut installed. The tray controller will launch when you sign in."
+Write-Host "Sparkle shortcuts updated. Double-click the tray icon to view logs; use its Quit menu to exit."
 Write-Host "For a taskbar launcher, open Start, search '$AppName', right-click it, and choose 'Pin to taskbar'."

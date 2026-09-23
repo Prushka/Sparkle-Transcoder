@@ -63,6 +63,13 @@
 }
 
 @layer utilities {
+  /* Keep all cards available to browser find and keyboard navigation while
+     letting the browser skip offscreen layout and painting. */
+  .media-card {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 186px;
+  }
+
   .app-scrollbar {
     scrollbar-color: hsl(var(--border)) hsl(var(--background));
     scrollbar-width: thin;

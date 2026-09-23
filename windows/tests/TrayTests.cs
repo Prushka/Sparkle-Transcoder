@@ -1,0 +1,88 @@
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Windows.Forms;
+
+namespace Sparkle.Windows
+{
+    internal static class TrayTests
+    {
+        [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+        [STAThread]
+        private static void Main(string[] args)
+        {
+            string result = Path.Combine(args[0], "test-result.txt");
+            try
+            {
+                Environment.SetEnvironmentVariable("SPARKLE_TEST_DIR", args[0]);
+                Application.EnableVisualStyles();
+                using (var activation = new EventWaitHandle(false, EventResetMode.AutoReset))
+                using (var app = new TrayApplication(args[0], args[1], activation))
+                {
+                    Wait(delegate { app.LogWindow.RefreshLogs(); return app.LogWindow.LogText.Contains("stderr: ready"); }, "capturing stdout/stderr");
+                    Check(app.LogWindow.LogText.Contains("Unicode \u65e5\u672c\u8a9e"), "UTF-8 output must survive redirection");
+                    Check(!app.LogWindow.Visible, "startup must be tray-only");
+                    Wait(delegate { return File.Exists(Path.Combine(args[0], "child-console.txt")); }, "child startup");
+                    Check(File.ReadAllText(Path.Combine(args[0], "backend-console.txt")) == "0", "backend unexpectedly has a console");
+                    Check(File.ReadAllText(Path.Combine(args[0], "child-console.txt")) == "0", "child unexpectedly has a console");
+                    int launcher = app.BackendProcessId;
+                    app.ShowLogs();
+                    Check(app.LogWindow.Visible, "logs did not open");
+                    Check(IsWindowVisible(app.LogWindow.Handle), "logs were hidden by the process startup window style");
+                    app.LogWindow.Close();
+                    Check(!app.LogWindow.Visible && !app.LogWindow.IsDisposed, "closing logs must hide the window");
+                    Check(app.IsRunning && app.BackendProcessId == launcher, "closing logs stopped or restarted backend");
+                    activation.Set();
+                    Wait(delegate { return app.LogWindow.Visible; }, "second-launch activation");
+                    int child = Int32.Parse(File.ReadAllText(Path.Combine(args[0], "child-pid.txt")));
+                    app.StopBackend(false, false);
+                    Wait(delegate { return app.BackendProcessId == 0; }, "graceful stop");
+                    Check(File.Exists(Path.Combine(args[0], "graceful-stop.txt")), "graceful shutdown signal was not received");
+                    Wait(delegate { return Gone(child); }, "encoder child cleanup");
+                    Check(!app.IsQuitting && app.LogWindow.Visible, "Stop must leave the tray/log window alive");
+                    app.StartBackend();
+                    Wait(delegate { return app.IsRunning && app.BackendProcessId != launcher; }, "start after stop");
+                    launcher = app.BackendProcessId;
+                    app.StopBackend(true, false);
+                    Wait(delegate { return app.IsRunning && app.BackendProcessId != launcher; }, "restart");
+                    app.StopBackend(false, true);
+                    Wait(delegate { return app.BackendProcessId == 0; }, "quit");
+                    Check(app.IsQuitting, "Quit did not end application lifetime");
+                }
+                using (var failed = new TrayApplication(args[0], Path.Combine(args[0], "missing.exe"), null))
+                {
+                    Check(!failed.IsRunning && failed.LogWindow.Visible, "startup errors must open the log window");
+                    Check(failed.LogWindow.LogText.Contains("Unable to start"), "startup error details missing from logs");
+                    failed.LogWindow.Close();
+                    Check(!failed.IsQuitting, "closing failed-start logs must preserve the tray");
+                    failed.StopBackend(false, true);
+                }
+                using (var buffer = new LogBuffer(Path.Combine(args[0], "bounded-logs")))
+                {
+                    for (int i = 0; i < 3000; i++) buffer.Write("test", new String('x', 200));
+                    long cursor = 0;
+                    bool reset;
+                    Check(buffer.Read(ref cursor, out reset).Length <= LogBuffer.MaxCharacters && reset, "log display memory must be bounded");
+                    Check(buffer.Read(ref cursor, out reset) == "", "unchanged logs should not be re-rendered");
+                }
+                File.WriteAllText(result, "PASS: hidden startup and children; UTF-8 live logs; close/reopen; activation; stop/start/restart/quit; graceful shutdown; process-tree cleanup; bounded logs.");
+            }
+            catch (Exception error) { File.WriteAllText(result, "FAIL: " + error); Environment.ExitCode = 1; }
+        }
+        private static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
+        private static bool Gone(int pid) { try { using (var process = Process.GetProcessById(pid)) return process.HasExited; } catch (ArgumentException) { return true; } }
+        private static void Wait(Func<bool> condition, string label)
+        {
+            var timeout = Stopwatch.StartNew();
+            while (timeout.ElapsedMilliseconds < 20000)
+            {
+                Application.DoEvents();
+                if (condition()) return;
+                Thread.Sleep(20);
+            }
+            throw new Exception("Timed out: " + label);
+        }
+    }
+}

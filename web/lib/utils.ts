@@ -17,12 +17,15 @@ export function formatBytes(bytes?: number) {
   return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
+let dateFormatter: Intl.DateTimeFormat | undefined;
+
 export function formatDate(value?: string) {
   if (!value) return "Never";
-  return new Intl.DateTimeFormat(undefined, {
+  dateFormatter ??= new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit"
-  }).format(new Date(value));
+  });
+  return dateFormatter.format(new Date(value));
 }

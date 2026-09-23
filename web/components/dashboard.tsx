@@ -44,6 +44,7 @@ import {
   type TranscodeTask
 } from "@/lib/api";
 import { cn, formatBytes, formatDate } from "@/lib/utils";
+import { groupEpisodes, indexEpisodes, limitLibraryItems, sortLibraryItems, sortMediaItems, type LibrarySort } from "@/lib/library";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -86,7 +87,6 @@ type TaskReplacePlan = {
 };
 type QueueCreateMode = "replace" | "incomplete";
 type QueueMode = QueueCreateMode | "delete";
-type LibrarySort = "title" | "recent";
 type TriStateFilterState = "include" | "exclude";
 type TriStateFilters = Record<string, TriStateFilterState>;
 
@@ -99,7 +99,6 @@ const LIVE_TASK_POLL_INTERVAL_MS = 30000;
 const TASK_CANCEL_POLL_INTERVAL_MS = 1000;
 const TASK_CANCEL_TIMEOUT_MS = 120000;
 const LIBRARY_PAGE_SIZE = 300;
-const FALLBACK_MEDIA_CREATION_TIME = Date.UTC(2019, 0, 1);
 
 type TaskSelection = {
   title: string;
@@ -134,6 +133,7 @@ const initialState: LoadState = {
 export function Dashboard() {
   const [state, setState] = React.useState<LoadState>(initialState);
   const [query, setQuery] = React.useState("");
+  const deferredQuery = React.useDeferredValue(query);
   const [kind, setKind] = React.useState("all");
   const [library, setLibrary] = React.useState("all");
   const [librarySort, setLibrarySort] = React.useState<LibrarySort>("recent");
@@ -301,10 +301,10 @@ export function Dashboard() {
     });
   }, [kind, library, state.media]);
   const filtered = React.useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = deferredQuery.trim().toLowerCase();
     if (!q) return queueScope;
     return queueScope.filter((item) => `${item.title} ${item.show ?? ""} ${item.fileName} ${item.library}`.toLowerCase().includes(q));
-  }, [query, queueScope]);
+  }, [deferredQuery, queueScope]);
   const sortedMedia = React.useMemo(() => sortLibraryItems(filtered, librarySort), [filtered, librarySort]);
   const visibleMedia = React.useMemo(() => limitLibraryItems(sortedMedia, mediaLimit, librarySort), [librarySort, mediaLimit, sortedMedia]);
   const hiddenMediaCount = sortedMedia.length - visibleMedia.length;
@@ -504,7 +504,7 @@ export function Dashboard() {
     }
   };
 
-  const deleteTask = async (id: string) => {
+  const deleteTask = React.useCallback(async (id: string) => {
     setBusy(true);
     try {
       const task = state.tasks.find((candidate) => candidate.id === id);
@@ -523,7 +523,7 @@ export function Dashboard() {
     } finally {
       setBusy(false);
     }
-  };
+  }, [cancelTasksAndWait, state.tasks]);
 
   const deleteSelectionTasks = async (selection: TaskSelection) => {
     const existingTasks = existingTasksForMedia(selection.items, state.tasks);
@@ -1117,7 +1117,7 @@ function TriStateFilterGroup({
   );
 }
 
-function LibraryView({
+const LibraryView = React.memo(function LibraryView({
   items,
   queueItems,
   sort,
@@ -1134,10 +1134,11 @@ function LibraryView({
   onTranscode: (items: MediaItem[], title?: string, description?: string, bulk?: boolean) => void;
   onDeleteTask: (id: string) => void;
 }) {
-  const movies = items.filter((item) => item.kind === "movie");
-  const shows = groupEpisodes(items.filter((item) => item.kind === "episode"), sort);
-  const unknown = items.filter((item) => item.kind === "unknown");
-  const queueEpisodes = queueItems.filter((item) => item.kind === "episode");
+  const movies = React.useMemo(() => items.filter((item) => item.kind === "movie"), [items]);
+  const shows = React.useMemo(() => groupEpisodes(items, sort), [items, sort]);
+  const unknown = React.useMemo(() => items.filter((item) => item.kind === "unknown"), [items]);
+  const queueShows = React.useMemo(() => indexEpisodes(queueItems), [queueItems]);
+  const transcodeItem = React.useCallback((item: MediaItem) => onTranscode([item]), [onTranscode]);
   const [collapsedShows, setCollapsedShows] = React.useState<string[]>([]);
   const [collapsedSeasons, setCollapsedSeasons] = React.useState<string[]>([]);
 
@@ -1147,13 +1148,14 @@ function LibraryView({
         <MediaSection title="Movies" icon={Film}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {movies.map((item) => (
-              <MediaCard item={item} task={taskForMedia(item, taskIndex)} busy={busy} key={item.id} onTranscode={(media) => onTranscode([media])} onDeleteTask={onDeleteTask} />
+              <MediaCard item={item} task={taskForMedia(item, taskIndex)} busy={busy} key={item.id} onTranscode={transcodeItem} onDeleteTask={onDeleteTask} />
             ))}
           </div>
         </MediaSection>
       ) : null}
       {shows.map((show) => {
-        const showItems = itemsForShow(queueEpisodes, show.name);
+        const queueShow = queueShows.get(show.name);
+        const showItems = queueShow?.items ?? [];
         const showCollapsed = collapsedShows.includes(show.name);
         return (
           <MediaSection
@@ -1179,7 +1181,7 @@ function LibraryView({
             {showCollapsed ? null : (
               <div className="space-y-4">
                 {show.seasons.map((season) => {
-                  const seasonItems = itemsForSeason(showItems, season.number);
+                  const seasonItems = queueShow?.seasons.get(season.number) ?? [];
                   const seasonKey = `${show.name}:${season.number}`;
                   const seasonCollapsed = collapsedSeasons.includes(seasonKey);
                   return (
@@ -1223,7 +1225,7 @@ function LibraryView({
                       {seasonCollapsed ? null : (
                         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                           {season.items.map((item) => (
-                            <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} busy={busy} key={item.id} onTranscode={(media) => onTranscode([media])} onDeleteTask={onDeleteTask} />
+                            <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} busy={busy} key={item.id} onTranscode={transcodeItem} onDeleteTask={onDeleteTask} />
                           ))}
                         </div>
                       )}
@@ -1239,7 +1241,7 @@ function LibraryView({
         <MediaSection title="Unmatched" icon={Video}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {unknown.map((item) => (
-              <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} busy={busy} key={item.id} onTranscode={(media) => onTranscode([media])} onDeleteTask={onDeleteTask} />
+              <EpisodeRow item={item} task={taskForMedia(item, taskIndex)} busy={busy} key={item.id} onTranscode={transcodeItem} onDeleteTask={onDeleteTask} />
             ))}
           </div>
         </MediaSection>
@@ -1247,7 +1249,7 @@ function LibraryView({
       {!items.length ? <EmptyState label="No media found" /> : null}
     </div>
   );
-}
+});
 
 function MediaSection({
   title,
@@ -1297,7 +1299,7 @@ function MediaSection({
   );
 }
 
-function MediaCard({
+const MediaCard = React.memo(function MediaCard({
   item,
   task,
   busy,
@@ -1311,7 +1313,7 @@ function MediaCard({
   onDeleteTask: (id: string) => void;
 }) {
   return (
-    <motion.div className="h-full" layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
+    <div className="media-card h-full">
       <Card className="h-full overflow-hidden">
         <div className="grid h-full min-h-[168px] grid-cols-[112px_minmax(0,1fr)] sm:min-h-[186px] sm:grid-cols-[124px_minmax(0,1fr)]">
           <Poster item={item} className="aspect-auto h-full min-h-[168px] w-full self-stretch rounded-none border-y-0 border-l-0 border-r sm:min-h-[186px]" />
@@ -1340,11 +1342,11 @@ function MediaCard({
           </div>
         </div>
       </Card>
-    </motion.div>
+    </div>
   );
-}
+});
 
-function EpisodeRow({
+const EpisodeRow = React.memo(function EpisodeRow({
   item,
   task,
   busy,
@@ -1358,7 +1360,7 @@ function EpisodeRow({
   onDeleteTask: (id: string) => void;
 }) {
   return (
-    <motion.div className="h-full" layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
+    <div className="media-card h-full">
       <Card className="h-full">
         <CardContent className="flex h-full gap-3 p-3">
           <Poster item={item} className="size-20 shrink-0 self-start" />
@@ -1389,9 +1391,9 @@ function EpisodeRow({
           </div>
         </CardContent>
       </Card>
-    </motion.div>
+    </div>
   );
-}
+});
 
 function Poster({ item, className }: { item: MediaItem; className?: string }) {
   const src = posterUrl(item);
@@ -1399,7 +1401,7 @@ function Poster({ item, className }: { item: MediaItem; className?: string }) {
     <div className={cn("flex aspect-2/3 items-center justify-center overflow-hidden rounded-md border bg-muted", className)}>
       {src ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt="" className="h-full w-full object-cover" loading="lazy" />
+        <img src={src} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" />
       ) : (
         <Film className="size-7 text-muted-foreground" />
       )}
@@ -1777,6 +1779,7 @@ function TaskDialog({
   const isBulkSelection = Boolean(selection?.bulk);
   const effectiveQueueMode: QueueMode = selection?.bulk ? queueMode : "replace";
   const queueCreateMode: QueueCreateMode = effectiveQueueMode === "incomplete" ? "incomplete" : "replace";
+  const selectionTaskIndex = React.useMemo(() => buildReplacementTaskIndex(selection?.existingTasks ?? []), [selection?.existingTasks]);
   const actionItems = React.useMemo(() => (selection ? queueActionItems(selection, effectiveQueueMode) : []), [effectiveQueueMode, selection]);
   const actionItemIds = React.useMemo(() => actionItems.map((item) => item.id), [actionItems]);
   const actionItemIdsKey = actionItemIds.join("|");
@@ -1801,7 +1804,10 @@ function TaskDialog({
   const actionGroups = React.useMemo(() => groupDialogMediaItems(filteredActionItems, selection), [filteredActionItems, selection]);
   const filteredActionIds = React.useMemo(() => filteredActionItems.map((item) => item.id), [filteredActionItems]);
   const filteredSelectedCount = filteredActionIds.filter((id) => selectedMediaIdSet.has(id)).length;
-  const queuePlan = actionSelection ? buildQueuePlan(actionSelection.items, actionSelection.existingTasks, queueCreateMode) : emptyQueuePlan();
+  const queuePlan = React.useMemo(
+    () => actionSelection ? buildQueuePlan(actionSelection.items, actionSelection.existingTasks, queueCreateMode) : emptyQueuePlan(),
+    [actionSelection, queueCreateMode]
+  );
   const selectedExistingTasks = uniqueTasks(actionSelection?.existingTasks ?? []);
   const deleteActionItems = React.useMemo(() => (selection ? queueActionItems(selection, "delete") : []), [selection]);
   const deleteActionTasks = React.useMemo(() => existingTasksForMedia(deleteActionItems, selection?.existingTasks ?? []), [deleteActionItems, selection?.existingTasks]);
@@ -1964,7 +1970,7 @@ function TaskDialog({
                       <div className={cn("divide-y", collapsedMediaGroupKeys.includes(group.key) && "hidden")}>
                         {group.items.map((item) => {
                           const checked = selectedMediaIdSet.has(item.id);
-                          const taskCount = tasksForReplacementMedia(item, selection.existingTasks).length;
+                          const taskCount = tasksForReplacementMedia(item, selectionTaskIndex).length;
                           const emptyTaskBadge = effectiveQueueMode === "replace" ? "No task" : "Missing";
                           return (
                             <label key={item.id} className="flex min-w-0 cursor-pointer items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/50">
@@ -2787,8 +2793,9 @@ function emptyQueuePlan(): QueuePlan {
 function buildQueuePlan(items: MediaItem[], tasks: TranscodeTask[], queueMode: QueueCreateMode): QueuePlan {
   const plan = emptyQueuePlan();
   const selectedItems = uniqueMediaItems(items);
+  const taskIndex = buildReplacementTaskIndex(tasks);
   for (const item of selectedItems) {
-    const itemTasks = tasksForReplacementMedia(item, tasks);
+    const itemTasks = tasksForReplacementMedia(item, taskIndex);
     const hasCompleteTask = itemTasks.some(isCompleteTask);
     if (queueMode === "incomplete" && hasCompleteTask) {
       plan.skippedCompleteItems.push(item);
@@ -2819,16 +2826,29 @@ function queueActionItems(selection: TaskSelection, queueMode: QueueMode) {
 }
 
 function mediaItemsWithExistingTasks(items: MediaItem[], tasks: TranscodeTask[]) {
-  return uniqueMediaItems(items).filter((item) => tasksForReplacementMedia(item, tasks).length > 0);
+  const taskIndex = buildReplacementTaskIndex(tasks);
+  return uniqueMediaItems(items).filter((item) => tasksForReplacementMedia(item, taskIndex).length > 0);
 }
 
 function existingTasksForMedia(items: MediaItem[], tasks: TranscodeTask[]) {
-  return uniqueTasks(uniqueMediaItems(items).flatMap((item) => tasksForReplacementMedia(item, tasks)));
+  const taskIndex = buildReplacementTaskIndex(tasks);
+  return uniqueTasks(uniqueMediaItems(items).flatMap((item) => tasksForReplacementMedia(item, taskIndex)));
 }
 
-function tasksForReplacementMedia(item: MediaItem, tasks: TranscodeTask[]) {
-  const selectedKeys = new Set(replacementMediaKeys(item));
-  return uniqueTasks(tasks.filter((task) => replacementTaskKeys(task).some((key) => selectedKeys.has(key))));
+function buildReplacementTaskIndex(tasks: TranscodeTask[]) {
+  const index = new Map<string, TranscodeTask[]>();
+  for (const task of tasks) {
+    for (const key of replacementTaskKeys(task)) {
+      const matches = index.get(key);
+      if (matches) matches.push(task);
+      else index.set(key, [task]);
+    }
+  }
+  return index;
+}
+
+function tasksForReplacementMedia(item: MediaItem, index: Map<string, TranscodeTask[]>) {
+  return uniqueTasks(replacementMediaKeys(item).flatMap((key) => index.get(key) ?? []));
 }
 
 function asLibrarySort(value: string): LibrarySort {
@@ -2842,69 +2862,6 @@ function librarySortLabel(sort: LibrarySort) {
     default:
       return "Title";
   }
-}
-
-function sortLibraryItems(items: MediaItem[], sort: LibrarySort) {
-  const next = [...items];
-  if (sort === "recent") {
-    const now = Date.now();
-    return next.sort((a, b) => compareMediaRecentlyAdded(a, b, now));
-  }
-  return next.sort(compareMediaTitle);
-}
-
-function limitLibraryItems(items: MediaItem[], limit: number, sort: LibrarySort) {
-  if (sort !== "recent") return items.slice(0, limit);
-
-  const visible: MediaItem[] = [];
-  const visibleEpisodeShows = new Set<string>();
-  const allEpisodesByShow = items.reduce((groups, item) => {
-    if (item.kind !== "episode") return groups;
-    const show = episodeShowName(item);
-    if (!groups.has(show)) groups.set(show, []);
-    groups.get(show)!.push(item);
-    return groups;
-  }, new Map<string, MediaItem[]>());
-
-  for (const item of items) {
-    if (visible.length >= limit) break;
-
-    if (item.kind !== "episode") {
-      visible.push(item);
-      continue;
-    }
-
-    const show = episodeShowName(item);
-    if (visibleEpisodeShows.has(show)) continue;
-    visibleEpisodeShows.add(show);
-    visible.push(...(allEpisodesByShow.get(show) ?? [item]));
-  }
-
-  return sortLibraryItems(visible, sort);
-}
-
-function compareMediaTitle(a: MediaItem, b: MediaItem) {
-  return a.sortKey.localeCompare(b.sortKey) || a.fileName.localeCompare(b.fileName);
-}
-
-function compareMediaRecentlyAdded(a: MediaItem, b: MediaItem, now: number) {
-  return mediaCreationTime(b, now) - mediaCreationTime(a, now) || compareMediaTitle(a, b);
-}
-
-function mediaCreationTime(item: MediaItem, now: number) {
-  const value = Date.parse(item.createdAt);
-  return Number.isFinite(value) && value <= now ? value : FALLBACK_MEDIA_CREATION_TIME;
-}
-
-function newestMediaCreationTime(items: MediaItem[], now: number) {
-  return items.reduce((newest, item) => Math.max(newest, mediaCreationTime(item, now)), FALLBACK_MEDIA_CREATION_TIME);
-}
-
-function newestShowCreationTime(seasons: Map<number, MediaItem[]>, now: number) {
-  return Array.from(seasons.values()).reduce(
-    (newest, items) => Math.max(newest, newestMediaCreationTime(items, now)),
-    FALLBACK_MEDIA_CREATION_TIME
-  );
 }
 
 function isCompleteTask(task: TranscodeTask) {
@@ -3019,14 +2976,6 @@ function duplicateMovieSuffix(value: string) {
   );
 }
 
-function itemsForShow(items: MediaItem[], showName: string) {
-  return sortMediaItems(items.filter((item) => episodeShowName(item) === showName));
-}
-
-function itemsForSeason(items: MediaItem[], seasonNumber: number) {
-  return sortMediaItems(items.filter((item) => (item.season || 0) === seasonNumber));
-}
-
 function filterDialogMediaItems(items: MediaItem[], query: string) {
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (!terms.length) return sortMediaItems(items);
@@ -3057,7 +3006,7 @@ function groupDialogMediaItems(items: MediaItem[], selection: TaskSelection | nu
       return groups;
     }, new Map<number, MediaItem[]>())
   )
-    .sort(([a], [b]) => a - b)
+    .sort(([a], [b]) => b - a)
     .map(([season, seasonItems]) => ({
       key: `season:${season}`,
       label: season ? `Season ${season}` : "Specials",
@@ -3069,20 +3018,6 @@ function groupDialogMediaItems(items: MediaItem[], selection: TaskSelection | nu
 function shouldGroupDialogBySeason(selection: TaskSelection) {
   if (!selection.bulk || !selection.items.every((item) => item.kind === "episode")) return false;
   return new Set(selection.items.map((item) => item.season || 0)).size > 1;
-}
-
-function sortMediaItems(items: MediaItem[]) {
-  return [...items].sort(
-    (a, b) =>
-      (a.season || 0) - (b.season || 0) ||
-      (a.episode || 0) - (b.episode || 0) ||
-      a.sortKey.localeCompare(b.sortKey) ||
-      a.fileName.localeCompare(b.fileName)
-  );
-}
-
-function episodeShowName(item: MediaItem) {
-  return item.show || "Unknown Show";
 }
 
 function selectionCountDescription(count: number, singular: string) {
@@ -3193,32 +3128,4 @@ function selectionMediaLabel(items: MediaItem[], count = items.length) {
   if (items.every((item) => item.kind === "episode")) return count === 1 ? "episode" : "episodes";
   if (items.every((item) => item.kind === "movie")) return count === 1 ? "movie" : "movies";
   return count === 1 ? "media file" : "media files";
-}
-
-function groupEpisodes(items: MediaItem[], sort: LibrarySort = "title") {
-  const now = Date.now();
-  const shows = new Map<string, Map<number, MediaItem[]>>();
-  for (const item of items) {
-    const show = episodeShowName(item);
-    const season = item.season || 0;
-    if (!shows.has(show)) shows.set(show, new Map());
-    const seasons = shows.get(show)!;
-    if (!seasons.has(season)) seasons.set(season, []);
-    seasons.get(season)!.push(item);
-  }
-  return Array.from(shows.entries())
-    .sort(([aName, aSeasons], [bName, bSeasons]) =>
-      sort === "recent"
-        ? newestShowCreationTime(bSeasons, now) - newestShowCreationTime(aSeasons, now) || aName.localeCompare(bName)
-        : aName.localeCompare(bName)
-    )
-    .map(([name, seasons]) => ({
-      name,
-      seasons: Array.from(seasons.entries())
-        .sort(([aNumber], [bNumber]) => aNumber - bNumber)
-        .map(([number, seasonItems]) => ({
-          number,
-          items: sortMediaItems(seasonItems)
-        }))
-    }));
 }

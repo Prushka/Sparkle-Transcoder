@@ -40,6 +40,7 @@ func (r LocalRunner) RunInDir(ctx context.Context, dir string, name string, args
 		}
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	HideWindow(cmd)
 	if dir != "" {
 		cmd.Dir = dir
 	}

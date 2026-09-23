@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sparkle-transcoder/internal/config"
+	"sparkle-transcoder/internal/executil"
 	"sparkle-transcoder/internal/media"
 	"sparkle-transcoder/internal/task"
 
@@ -160,6 +161,7 @@ func checkTool(parent context.Context, spec toolSpec) toolReadiness {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, spec.VersionArgs...)
+	executil.HideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	status.Version = firstVersionLine(string(out))
 	if err != nil {
