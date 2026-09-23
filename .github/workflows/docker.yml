@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: ${{ vars.FRONTEND_IMAGE || format('{0}/sparkle-manager-frontend', secrets.DOCKERHUB_USERNAME) }}
+  IMAGE: ${{ vars.FRONTEND_IMAGE || 'meinya/sparkle-transcoder-frontend' }}
 
 jobs:
   checks:
@@ -52,7 +52,7 @@ jobs:
       published: ${{ steps.publish.outputs.published }}
       digest: ${{ steps.publish.outputs.digest }}
     env:
-      LOCAL_IMAGE: sparkle-frontend-ci:${{ github.sha }}
+      LOCAL_IMAGE: sparkle-transcoder-frontend:ci-${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,7 +74,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=sparkle-frontend-amd64
       - name: Smoke-test frontend and runtime backend proxy
         run: |
-          container="sparkle-frontend-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container="sparkle-transcoder-frontend-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           cleanup() {
             status=$?
             if (( status != 0 )); then

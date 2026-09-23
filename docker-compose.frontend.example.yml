@@ -1,9 +1,9 @@
 services:
   frontend:
-    image: ${FRONTEND_IMAGE:-sparkle-manager-frontend:local}
+    image: ${FRONTEND_IMAGE:-sparkle-transcoder-frontend:local}
     build:
       context: ./web
-    container_name: sparkle-manager-frontend
+    container_name: sparkle-transcoder-frontend
     restart: unless-stopped
     ports:
       - "3000:3000"

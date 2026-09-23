@@ -127,8 +127,10 @@ For workflow edits, run
 follow the isolated container smoke test in `.github/workflows/docker.yml` and
 `.github/scripts/smoke-test-frontend.mjs`. `build-frontend-image.sh` always pushes
 both `latest` and a commit tag; use a local `docker build` for build-only checks.
-It requires `IMAGE_NAME`; CI uses the Docker Hub username or the `FRONTEND_IMAGE`
-repository variable. Keep registry account names out of tracked configuration.
+The helper and CI default to the public image `meinya/sparkle-transcoder-frontend`.
+Override it with `IMAGE_NAME` in the helper or the `FRONTEND_IMAGE` repository
+variable in CI. The helper needs no local wrapper. Keep registry credentials
+out of tracked configuration.
 Report checks actually run and any platform or tool limitations.
 
 ## Guide maintenance references
