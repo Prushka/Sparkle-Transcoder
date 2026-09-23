@@ -23,6 +23,7 @@ namespace Sparkle.Windows
                 {
                     Wait(delegate { app.LogWindow.RefreshLogs(); return app.LogWindow.LogText.Contains("stderr: ready"); }, "capturing stdout/stderr");
                     Check(app.LogWindow.LogText.Contains("Unicode \u65e5\u672c\u8a9e"), "UTF-8 output must survive redirection");
+                    Check(File.Exists(Path.Combine(args[0], "local-launcher-used.txt")), "tray did not use the local backend launcher");
                     Check(!app.LogWindow.Visible, "startup must be tray-only");
                     Wait(delegate { return File.Exists(Path.Combine(args[0], "child-console.txt")); }, "child startup");
                     Check(File.ReadAllText(Path.Combine(args[0], "backend-console.txt")) == "0", "backend unexpectedly has a console");

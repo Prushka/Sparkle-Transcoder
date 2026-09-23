@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,16 +13,16 @@ type Config struct {
 	Debug bool `env:"DEBUG" envDefault:"false"`
 
 	Addr      string `env:"API_ADDR" envDefault:":1323"`
-	MediaRoot string `env:"MEDIA_ROOT" envDefault:"/Volumes/media/Managed-Videos"`
-	Output    string `env:"OUTPUT" envDefault:"/Volumes/media/Managed-Videos/Public/output"`
+	MediaRoot string `env:"MEDIA_ROOT" envDefault:"./media"`
+	Output    string `env:"OUTPUT" envDefault:"./output"`
 	DataDir   string `env:"DATA_DIR" envDefault:"./.sparkle-transcoder"`
 
 	ScanCacheFile    string        `env:"SCAN_CACHE_FILE" envDefault:""`
 	IncrementalScan  bool          `env:"SCAN_INCREMENTAL" envDefault:"true"`
 	ScanOnStartup    bool          `env:"SCAN_ON_STARTUP" envDefault:"true"`
 	ScanInterval     time.Duration `env:"SCAN_INPUT_INTERVAL" envDefault:"12h"`
-	MediaLibraries   []string      `env:"MEDIA_LIBRARIES" envDefault:"Anime,Anime-R,Movies,Movies-R,TV-Shows,TV-Shows-R"`
-	MediaExcludeDirs []string      `env:"MEDIA_EXCLUDE_DIRS" envDefault:"Public/output,Public/temp,.Trashes,.Spotlight-V100,.fseventsd"`
+	MediaLibraries   []string      `env:"MEDIA_LIBRARIES" envDefault:"Movies,TV-Shows"`
+	MediaExcludeDirs []string      `env:"MEDIA_EXCLUDE_DIRS" envDefault:"output,temp"`
 
 	Ffmpeg       string `env:"FFMPEG" envDefault:"ffmpeg"`
 	Ffprobe      string `env:"FFPROBE" envDefault:"ffprobe"`
@@ -65,6 +66,15 @@ func Load() (*Config, error) {
 	cfg.DataDir = filepath.Clean(cfg.DataDir)
 	if cfg.ScanCacheFile == "" {
 		cfg.ScanCacheFile = filepath.Join(cfg.DataDir, "scan-cache.json")
+	}
+	// Media commands change their working directory to the input's directory.
+	// Resolve configured relative paths before passing outputs to those commands.
+	for _, path := range []*string{&cfg.MediaRoot, &cfg.Output, &cfg.DataDir, &cfg.ScanCacheFile} {
+		absolute, err := filepath.Abs(*path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve path %q: %w", *path, err)
+		}
+		*path = absolute
 	}
 	if cfg.TaskConcurrency < 1 {
 		cfg.TaskConcurrency = 1

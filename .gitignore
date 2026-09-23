@@ -5,6 +5,16 @@ start-backend.sh
 start-frontend.sh
 bin/
 tmp/
+/media/
+/output/
+
+# Machine-specific launchers, registry settings, and environment files.
+*.local.ps1
+*.local.sh
+*.local.yml
+.env
+.env.*
+!.env.example
 
 web/.next/
 web/node_modules/

@@ -1,12 +1,21 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$NpmExe = "npm.cmd",
+    [switch]$NoLocalConfig
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path $PSScriptRoot).Path
 $WebRoot = Join-Path $RepoRoot "web"
-$NpmExe = "C:\Roxy\SDK\nodejs\npm.cmd"
+$LocalLauncher = Join-Path $RepoRoot "launch-frontend.local.ps1"
+if (-not $NoLocalConfig -and (Test-Path -LiteralPath $LocalLauncher)) {
+    $LocalArguments = @{} + $PSBoundParameters
+    $LocalArguments.Remove('NoLocalConfig')
+    & $LocalLauncher @LocalArguments
+    return
+}
 $FrontendPort = 3000
  
 function Stop-StaleNextDevWorkers {
@@ -47,11 +56,11 @@ function Clear-NextDevCache {
     Remove-Item -LiteralPath $ResolvedDevCache -Recurse -Force
 }
 
-# Frontend runtime environment.
-$env:SPARKLE_API_BASE = "http://localhost:1323/api"
+# Use the caller's backend URL when provided.
+if (-not $env:SPARKLE_API_BASE) { $env:SPARKLE_API_BASE = "http://localhost:1323/api" }
 
-if (-not (Test-Path $NpmExe)) {
-    throw "npm was not found at $NpmExe. Update `$NpmExe in this script before launching the frontend."
+if (-not (Get-Command $NpmExe -CommandType Application -ErrorAction SilentlyContinue)) {
+    throw "npm was not found. Install Node.js on PATH or supply -NpmExe with its executable path."
 }
 
 Write-Host "Starting Sparkle Transcoder frontend on http://localhost:$FrontendPort"
@@ -66,14 +75,16 @@ try {
     }
 
     if (-not (Test-Path (Join-Path $WebRoot "node_modules"))) {
-        Write-Host "Frontend dependencies are missing; running npm install first."
-        & $NpmExe install
+        Write-Host "Frontend dependencies are missing; running npm ci first."
+        & $NpmExe ci
+        if ($LASTEXITCODE -ne 0) { throw "Frontend dependency installation failed." }
     }
 
     Stop-StaleNextDevWorkers -Root $WebRoot
     Clear-NextDevCache -Root $WebRoot
 
     & $NpmExe run dev
+    if ($LASTEXITCODE -ne 0) { throw "Frontend exited with code $LASTEXITCODE." }
 }
 finally {
     Pop-Location

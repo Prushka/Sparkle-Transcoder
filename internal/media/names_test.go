@@ -6,8 +6,8 @@ import (
 )
 
 func TestParseEpisodeItem(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "Managed-Videos")
-	path := filepath.Join(root, "TV-Shows", "Siren (2018)", "Season 2", "Siren (2018) - S02E04 - Oil and Water WEBDL-1080p.mkv")
+	root := filepath.Join(t.TempDir(), "Media")
+	path := filepath.Join(root, "TV-Shows", "Example Series (2018)", "Season 2", "Example Series (2018) - S02E04 - Example Episode WEBDL-1080p.mkv")
 
 	item, err := parseItem(root, path, 123, 456)
 	if err != nil {
@@ -16,20 +16,20 @@ func TestParseEpisodeItem(t *testing.T) {
 	if item.Kind != KindEpisode {
 		t.Fatalf("kind = %s, want %s", item.Kind, KindEpisode)
 	}
-	if item.Show != "Siren (2018)" {
+	if item.Show != "Example Series (2018)" {
 		t.Fatalf("show = %q", item.Show)
 	}
 	if item.Season != 2 || item.Episode != 4 {
 		t.Fatalf("season/episode = %d/%d", item.Season, item.Episode)
 	}
-	if item.Title != "Oil and Water WEBDL-1080p" {
+	if item.Title != "Example Episode WEBDL-1080p" {
 		t.Fatalf("title = %q", item.Title)
 	}
 }
 
 func TestParseEpisodeItemKeepsShowAndTitlePeriods(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "Managed-Videos")
-	path := filepath.Join(root, "Anime", "Dr. Stone", "Season 4", "Dr. STONE - S04E04 - Dr. X Bluray-1080p Remux.mkv")
+	root := filepath.Join(t.TempDir(), "Media")
+	path := filepath.Join(root, "Anime", "Dr. Example", "Season 4", "Dr. EXAMPLE - S04E04 - Dr. X Bluray-1080p Remux.mkv")
 
 	item, err := parseItem(root, path, 123, 456)
 	if err != nil {
@@ -38,7 +38,7 @@ func TestParseEpisodeItemKeepsShowAndTitlePeriods(t *testing.T) {
 	if item.Kind != KindEpisode {
 		t.Fatalf("kind = %s, want %s", item.Kind, KindEpisode)
 	}
-	if item.Show != "Dr. Stone" {
+	if item.Show != "Dr. Example" {
 		t.Fatalf("show = %q", item.Show)
 	}
 	if item.Title != "Dr. X Bluray-1080p Remux" {
@@ -47,8 +47,8 @@ func TestParseEpisodeItemKeepsShowAndTitlePeriods(t *testing.T) {
 }
 
 func TestParseMovieItem(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "Managed-Videos")
-	path := filepath.Join(root, "Movies", "Dune Part Two (2024)", "Dune Part Two (2024) Bluray-2160p.mkv")
+	root := filepath.Join(t.TempDir(), "Media")
+	path := filepath.Join(root, "Movies", "Example Movie (2024)", "Example Movie (2024) Bluray-2160p.mkv")
 
 	item, err := parseItem(root, path, 123, 456)
 	if err != nil {
@@ -57,7 +57,7 @@ func TestParseMovieItem(t *testing.T) {
 	if item.Kind != KindMovie {
 		t.Fatalf("kind = %s, want %s", item.Kind, KindMovie)
 	}
-	if item.Title != "Dune Part Two (2024)" {
+	if item.Title != "Example Movie (2024)" {
 		t.Fatalf("title = %q", item.Title)
 	}
 	if item.Year != "2024" {
@@ -66,8 +66,8 @@ func TestParseMovieItem(t *testing.T) {
 }
 
 func TestParseMovieItemKeepsDirectoryPeriods(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "Managed-Videos")
-	path := filepath.Join(root, "Movies", "Dr. Strangelove (1964)", "Dr. Strangelove (1964) Bluray-1080p.mkv")
+	root := filepath.Join(t.TempDir(), "Media")
+	path := filepath.Join(root, "Movies", "Dr. Example (1964)", "Dr. Example (1964) Bluray-1080p.mkv")
 
 	item, err := parseItem(root, path, 123, 456)
 	if err != nil {
@@ -76,7 +76,7 @@ func TestParseMovieItemKeepsDirectoryPeriods(t *testing.T) {
 	if item.Kind != KindMovie {
 		t.Fatalf("kind = %s, want %s", item.Kind, KindMovie)
 	}
-	if item.Title != "Dr. Strangelove (1964)" {
+	if item.Title != "Dr. Example (1964)" {
 		t.Fatalf("title = %q", item.Title)
 	}
 	if item.Year != "1964" {
@@ -85,7 +85,7 @@ func TestParseMovieItemKeepsDirectoryPeriods(t *testing.T) {
 }
 
 func TestParseUnknownItemCleansDotSeparatedFileTitle(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "Managed-Videos")
+	root := filepath.Join(t.TempDir(), "Media")
 	path := filepath.Join(root, "Uploads", "Some.Show.Name.2024.WEBDL-1080p.mkv")
 
 	item, err := parseItem(root, path, 123, 456)

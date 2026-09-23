@@ -256,7 +256,7 @@ func TestScannerMarksDuplicateMoviesAndEpisodes(t *testing.T) {
 
 func testMediaRoot(t *testing.T) string {
 	t.Helper()
-	root := filepath.Join(t.TempDir(), "Managed-Videos")
+	root := filepath.Join(t.TempDir(), "Media")
 	if err := os.MkdirAll(root, 0755); err != nil {
 		t.Fatal(err)
 	}

@@ -15,9 +15,9 @@ import (
 
 func TestHandbrakeTranscodeRunsFromInputDirWithShortInputName(t *testing.T) {
 	inputDir := filepath.Join(t.TempDir(),
-		"WorldEnd - What are you doing at the end of the world! Are you busy! Will you save us!",
+		"Example Series - A deliberately long title! With spaces! And punctuation! For source path handling!",
 		"Season 1")
-	input := filepath.Join(inputDir, "WorldEnd - What are you doing at the end of the world! Are you busy! Will you save us! - S01E02 - Late Autumn Night's Dream Bluray-1080p.mkv")
+	input := filepath.Join(inputDir, "Example Series - A deliberately long title! With spaces! And punctuation! For source path handling! - S01E02 - Example Episode's Title Bluray-1080p.mkv")
 	outputDir := t.TempDir()
 	exec := &spriteRecordingExec{}
 	runner := NewRunner(&config.Config{

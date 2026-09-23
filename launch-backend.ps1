@@ -1,24 +1,28 @@
 [CmdletBinding()]
 param(
-    [string]$BackendExecutable
+    [string]$BackendExecutable,
+    [string]$GoExe = "go",
+    [switch]$NoLocalConfig
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path $PSScriptRoot).Path
-$GoExe = "C:\Roxy\SDK\go1.26.2\bin\go.exe"
+$LocalLauncher = Join-Path $RepoRoot "launch-backend.local.ps1"
+if (-not $NoLocalConfig -and (Test-Path -LiteralPath $LocalLauncher)) {
+    $LocalArguments = @{} + $PSBoundParameters
+    $LocalArguments.Remove('NoLocalConfig')
+    & $LocalLauncher @LocalArguments
+    return
+}
 
-# Backend runtime environment. Edit these values here when the media mount or tools move.
-$env:MEDIA_ROOT = "O:\Managed-Videos"
-$env:OUTPUT = "O:\Managed-Videos\Public\output"
+# Caller-provided environment values take precedence over portable defaults.
+if (-not $env:MEDIA_ROOT) { $env:MEDIA_ROOT = Join-Path $RepoRoot "media" }
+if (-not $env:OUTPUT) { $env:OUTPUT = Join-Path $RepoRoot "output" }
 
-$env:SVT_AV1_ENCODER = "nvenc_av1_10bit"
-$env:AV1_PRESET = "slowest"
-$env:TASK_CONCURRENCY = "3"
-
-if (-not $BackendExecutable -and -not (Test-Path $GoExe)) {
-    throw "Go was not found at $GoExe. Update `$GoExe in this script before launching the backend."
+if (-not $BackendExecutable -and -not (Get-Command $GoExe -CommandType Application -ErrorAction SilentlyContinue)) {
+    throw "Go was not found. Install Go on PATH or supply -GoExe with its executable path."
 }
 
 Write-Host "Starting Sparkle Transcoder backend"
@@ -42,10 +46,11 @@ try {
         }
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         & $BackendExecutable
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        if ($LASTEXITCODE -ne 0) { throw "Backend exited with code $LASTEXITCODE." }
     }
     else {
         & $GoExe run ./cmd/server
+        if ($LASTEXITCODE -ne 0) { throw "Backend exited with code $LASTEXITCODE." }
     }
 }
 finally {

@@ -2,7 +2,8 @@
 param(
     [switch]$Remove,
     [switch]$NoStartup,
-    [switch]$NoStartMenu
+    [switch]$NoStartMenu,
+    [string]$GoExe
 )
 
 Set-StrictMode -Version Latest
@@ -61,7 +62,7 @@ if ($Remove) {
     return
 }
 
-& (Join-Path $RepoRoot "build-windows-app.ps1")
+& (Join-Path $RepoRoot "build-windows-app.ps1") -GoExe $GoExe
 Remove-LegacyShortcuts
 
 if (-not $NoStartup) {

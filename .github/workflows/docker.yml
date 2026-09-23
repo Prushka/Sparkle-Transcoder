@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: meinya/sparkle-manager-frontend
+  IMAGE: ${{ vars.FRONTEND_IMAGE || format('{0}/sparkle-manager-frontend', secrets.DOCKERHUB_USERNAME) }}
 
 jobs:
   checks:

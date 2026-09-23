@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE_NAME="${IMAGE_NAME:-meinya/sparkle-manager-frontend}"
+IMAGE_NAME="${IMAGE_NAME:?Set IMAGE_NAME to your registry namespace and image name}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 CONTEXT="${CONTEXT:-web}"
 DOCKERFILE="${DOCKERFILE:-web/Dockerfile}"

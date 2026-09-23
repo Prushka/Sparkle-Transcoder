@@ -8,6 +8,11 @@ if (-not (Test-Path -LiteralPath $Compiler)) { $Compiler = Join-Path $env:System
 $TestRoot = Join-Path $RepoRoot ("tmp\tray test " + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $TestRoot | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "launch-backend.ps1") -Destination $TestRoot
+@'
+param([string]$BackendExecutable)
+Set-Content -LiteralPath (Join-Path $PSScriptRoot 'local-launcher-used.txt') -Value 'yes'
+& (Join-Path $PSScriptRoot 'launch-backend.ps1') -NoLocalConfig -BackendExecutable $BackendExecutable
+'@ | Set-Content -LiteralPath (Join-Path $TestRoot 'launch-backend.local.ps1') -Encoding UTF8
 $FakeBackend = Join-Path $TestRoot "FakeBackend.exe"
 $TestApp = Join-Path $TestRoot "TrayTests.exe"
 & $Compiler /nologo /target:exe "/out:$FakeBackend" "$PSScriptRoot\tests\FakeBackend.cs"

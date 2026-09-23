@@ -1,12 +1,14 @@
 services:
   frontend:
-    image: meinya/sparkle-manager-frontend:latest
+    image: ${FRONTEND_IMAGE:-sparkle-manager-frontend:local}
+    build:
+      context: ./web
     container_name: sparkle-manager-frontend
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
       # URL reachable from the frontend container, not from the browser.
-      SPARKLE_API_BASE: "http://host.docker.internal:1323/api"
+      SPARKLE_API_BASE: "${SPARKLE_API_BASE:-http://host.docker.internal:1323/api}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
