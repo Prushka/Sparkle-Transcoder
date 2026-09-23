@@ -68,6 +68,32 @@ The scanner only reads `MEDIA_ROOT`. Task creation writes under `OUTPUT`. Existi
 
 Set `NEXT_PUBLIC_API_BASE=http://localhost:1323/api` if the backend runs elsewhere.
 
+### Docker image and GitHub Actions
+
+The frontend image is `meinya/sparkle-manager-frontend:latest` for `linux/amd64`.
+Use `docker-compose.frontend.example.yml` to run it and set `SPARKLE_API_BASE`
+to the backend URL reachable from the container. The image contains the frontend;
+the Windows tray application and transcoding backend run separately.
+
+[Test and publish frontend image](.github/workflows/docker.yml) runs on every
+branch push, pull request, and manual dispatch. It runs Go tests with race
+detection, Go vet, frontend tests, and workflow validation before building the
+production image. The Docker build also checks TypeScript. An isolated container
+smoke test verifies non-root startup, the homepage, compiled and public assets,
+and the runtime API/output proxies against a local fixture backend.
+
+With repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, branch pushes
+and manual runs publish the tested image under its full Git commit SHA, matching
+`build-frontend-image.sh`. Pull requests only build and test. If the secrets are
+missing, publishing is skipped with a notice. Only the current default-branch
+commit updates `latest`; serialized promotion prevents a slower, older build
+from replacing a newer image. The published digest is recorded in the run summary.
+
+Run it manually from **Actions → Test and publish frontend image → Run workflow**,
+or with `gh workflow run docker.yml --ref main`. Publishing an image does not
+restart existing containers; pull the new tag and recreate your frontend service
+when ready to deploy it.
+
 ## Verification
 
 The Windows tray integration tests use an isolated fake backend and do not touch the media library:

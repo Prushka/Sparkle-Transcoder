@@ -1,0 +1,157 @@
+name: Test and publish frontend image
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: meinya/sparkle-manager-frontend
+
+jobs:
+  checks:
+    name: Tests and workflow validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Test Go backend with race detection
+        run: go test -race -count=1 ./...
+      - name: Vet Go backend
+        run: go vet ./...
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+      - name: Test frontend
+        working-directory: web
+        run: npm test
+      - name: Validate workflow
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+  image:
+    name: Build and smoke-test frontend image
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+      digest: ${{ steps.publish.outputs.digest }}
+    env:
+      LOCAL_IMAGE: sparkle-frontend-ci:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Build and load
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ./web
+          file: ./web/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.LOCAL_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=sparkle-frontend-amd64
+          cache-to: type=gha,mode=max,scope=sparkle-frontend-amd64
+      - name: Smoke-test frontend and runtime backend proxy
+        run: |
+          container="sparkle-frontend-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            status=$?
+            if (( status != 0 )); then
+              docker logs "$container" || true
+            fi
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+          docker run -d --name "$container" --network none \
+            -e SPARKLE_API_BASE=http://127.0.0.1:4321/api "$LOCAL_IMAGE"
+          docker exec -i "$container" node --input-type=module < .github/scripts/smoke-test-frontend.mjs
+      - name: Check publishing credentials
+        id: credentials
+        if: github.event_name != 'pull_request'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::Image tested; publishing skipped until both Docker Hub secrets are configured.'
+            echo 'Image built and tested. Add DOCKERHUB_USERNAME and DOCKERHUB_TOKEN to enable publishing.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Log in to Docker Hub
+        if: steps.credentials.outputs.enabled == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Push the tested image with its commit tag
+        id: publish
+        if: steps.credentials.outputs.enabled == 'true'
+        run: |
+          docker tag "$LOCAL_IMAGE" "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:$GITHUB_SHA"
+          reference="$(docker image inspect "$IMAGE:$GITHUB_SHA" --format '{{index .RepoDigests 0}}')"
+          digest="${reference##*@}"
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo '::error::Published image digest could not be verified.'
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo 'published=true' >> "$GITHUB_OUTPUT"
+          echo "Published $IMAGE:$GITHUB_SHA ($digest)." >> "$GITHUB_STEP_SUMMARY"
+
+  latest:
+    name: Update default-branch latest tag
+    needs: image
+    if: needs.image.outputs.published == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Serialize mutable tag updates, and reject builds of an outdated branch head.
+    concurrency:
+      group: dockerhub-frontend-latest
+      cancel-in-progress: false
+    steps:
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Promote only the current default-branch commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_SHA: ${{ github.sha }}
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          head_sha="$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq '.object.sha')"
+          if [[ "$head_sha" != "$EXPECTED_SHA" ]]; then
+            echo '::notice::Default branch advanced; keeping this image under its commit tag only.'
+            echo 'Skipped latest: this commit is no longer the default-branch head.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          docker buildx imagetools create --prefer-index=false --tag "$IMAGE:latest" "$IMAGE@$IMAGE_DIGEST"
+          echo "Updated $IMAGE:latest from $EXPECTED_SHA ($IMAGE_DIGEST)." >> "$GITHUB_STEP_SUMMARY"
