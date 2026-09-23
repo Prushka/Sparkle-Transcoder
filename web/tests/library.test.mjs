@@ -78,6 +78,20 @@ test("queue index keeps complete show and season selections independently of sea
   assert.equal(visible[0].seasons[0].items.length, 1);
   assert.deepEqual(ids(index.get("A").items), ["A-2-2", "A-2-1", "A-1-1"]);
   assert.deepEqual(ids(index.get("A").seasons.get(2)), ["A-2-2", "A-2-1"]);
+  assert.deepEqual(index.get("A").summary, { seasonCount: 2, episodeCount: 3 });
+});
+
+test("show summaries count all seasons and episodes and use the latest file modification", () => {
+  const items = [
+    { ...episode("Show", 3, 1, "2025-06-01"), modTime: "2024-01-01T00:00:00Z" },
+    { ...episode("Show", 1, 1, "2024-01-01"), modTime: "2025-04-01T00:00:00Z" },
+    { ...episode("Show", 1, 2), modTime: "invalid" },
+    { ...episode("Show", 0, 1), modTime: "2025-03-01T00:00:00Z" },
+    { ...episode("Another show", 1, 1), modTime: "2026-01-01T00:00:00Z" }
+  ];
+  const index = indexEpisodes(items);
+  assert.deepEqual(index.get("Show").summary, { seasonCount: 3, episodeCount: 4, updatedAt: "2025-04-01T00:00:00Z" });
+  assert.deepEqual(index.get("Another show").summary, { seasonCount: 1, episodeCount: 1, updatedAt: "2026-01-01T00:00:00Z" });
 });
 
 test("recent sorting and grouping each read timestamps once per episode on a large library", () => {

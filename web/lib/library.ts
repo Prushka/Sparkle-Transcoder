@@ -3,6 +3,7 @@ import type { MediaItem } from "./api";
 export type LibrarySort = "title" | "recent";
 export type EpisodeSeason = { number: number; items: MediaItem[] };
 export type EpisodeShow = { name: string; seasons: EpisodeSeason[] };
+export type ShowSummary = { seasonCount: number; episodeCount: number; updatedAt?: string };
 
 const FALLBACK_MEDIA_CREATION_TIME = Date.UTC(2019, 0, 1);
 
@@ -48,25 +49,33 @@ export function sortLibraryItems(items: MediaItem[], sort: LibrarySort) {
 }
 
 export function indexEpisodes(items: MediaItem[]) {
-  const shows = new Map<string, { items: MediaItem[]; seasons: Map<number, MediaItem[]> }>();
+  const shows = new Map<string, { items: MediaItem[]; seasons: Map<number, MediaItem[]>; summary: ShowSummary }>();
   for (const item of items) {
     if (item.kind !== "episode") continue;
     const name = episodeShowName(item);
     let show = shows.get(name);
     if (!show) {
-      show = { items: [], seasons: new Map() };
+      show = { items: [], seasons: new Map(), summary: { seasonCount: 0, episodeCount: 0 } };
       shows.set(name, show);
     }
     show.items.push(item);
   }
   for (const show of shows.values()) {
     show.items = sortMediaItems(show.items);
+    let latestUpdate = -Infinity;
     for (const item of show.items) {
       const number = item.season || 0;
       const season = show.seasons.get(number);
       if (season) season.push(item);
       else show.seasons.set(number, [item]);
+      const modified = Date.parse(item.modTime);
+      if (Number.isFinite(modified) && modified > latestUpdate) {
+        latestUpdate = modified;
+        show.summary.updatedAt = item.modTime;
+      }
     }
+    show.summary.seasonCount = show.seasons.size;
+    show.summary.episodeCount = show.items.length;
   }
   return shows;
 }

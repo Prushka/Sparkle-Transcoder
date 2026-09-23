@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   BadgeCheck,
   Ban,
+  CalendarDays,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -44,8 +45,8 @@ import {
   type TranscodeTask
 } from "@/lib/api";
 import { cn, formatBytes, formatDate } from "@/lib/utils";
-import { groupEpisodes, indexEpisodes, limitLibraryItems, sortLibraryItems, sortMediaItems, type LibrarySort } from "@/lib/library";
-import { Badge } from "@/components/ui/badge";
+import { groupEpisodes, indexEpisodes, limitLibraryItems, sortLibraryItems, sortMediaItems, type LibrarySort, type ShowSummary } from "@/lib/library";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -1139,7 +1140,7 @@ const LibraryView = React.memo(function LibraryView({
   const unknown = React.useMemo(() => items.filter((item) => item.kind === "unknown"), [items]);
   const queueShows = React.useMemo(() => indexEpisodes(queueItems), [queueItems]);
   const transcodeItem = React.useCallback((item: MediaItem) => onTranscode([item]), [onTranscode]);
-  const [collapsedShows, setCollapsedShows] = React.useState<string[]>([]);
+  const [expandedShows, setExpandedShows] = React.useState<string[]>([]);
   const [collapsedSeasons, setCollapsedSeasons] = React.useState<string[]>([]);
 
   return (
@@ -1156,14 +1157,15 @@ const LibraryView = React.memo(function LibraryView({
       {shows.map((show) => {
         const queueShow = queueShows.get(show.name);
         const showItems = queueShow?.items ?? [];
-        const showCollapsed = collapsedShows.includes(show.name);
+        const showCollapsed = !expandedShows.includes(show.name);
         return (
           <MediaSection
             title={show.name}
             icon={Tv}
             key={show.name}
+            showSummary={queueShow?.summary}
             collapsed={showCollapsed}
-            onToggle={() => setCollapsedShows((current) => toggleID(current, show.name))}
+            onToggle={() => setExpandedShows((current) => toggleID(current, show.name))}
             action={
               <Tip content={`Queue all ${showItems.length.toLocaleString()} episodes in this show`}>
                 <Button
@@ -1254,6 +1256,7 @@ const LibraryView = React.memo(function LibraryView({
 function MediaSection({
   title,
   icon: Icon,
+  showSummary,
   collapsed,
   onToggle,
   action,
@@ -1261,6 +1264,7 @@ function MediaSection({
 }: {
   title: string;
   icon: React.ElementType;
+  showSummary?: ShowSummary;
   collapsed?: boolean;
   onToggle?: () => void;
   action?: React.ReactNode;
@@ -1268,21 +1272,48 @@ function MediaSection({
 }) {
   return (
     <section>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
+      <div className={cn("mb-3 flex flex-wrap items-center justify-between gap-2", showSummary && "border-b pb-3")}>
+        <div className={cn("min-w-0", showSummary && "flex-1 basis-64")}>
           {onToggle ? (
             <Tip content={`${collapsed ? "Expand" : "Collapse"} ${title}`}>
               <Button
                 type="button"
                 variant="ghost"
-                className="h-auto justify-start whitespace-normal px-1.5 py-1 text-left"
+                className={cn("h-auto justify-start whitespace-normal px-1.5 py-1 text-left", showSummary && "w-full items-start gap-2.5 py-2")}
                 aria-expanded={!collapsed}
                 aria-label={`${collapsed ? "Expand" : "Collapse"} ${title}`}
                 onClick={onToggle}
               >
-                {collapsed ? <ChevronRight /> : <ChevronDown />}
-                <Icon className="size-4 shrink-0 text-primary" />
-                <span className="break-words text-lg font-semibold leading-tight tracking-normal">{title}</span>
+                {collapsed ? <ChevronRight className={showSummary ? "mt-6" : undefined} /> : <ChevronDown className={showSummary ? "mt-6" : undefined} />}
+                {showSummary ? (
+                  <span className="flex min-w-0 flex-1 flex-col gap-1.5">
+                    <span className="flex flex-wrap items-center gap-2 text-xs font-semibold text-primary">
+                      <Icon className="size-3.5" />
+                      Show
+                      <span className={cn(badgeVariants({ variant: "outline" }), "rounded-full bg-muted/45")}>
+                        {showSummary.seasonCount.toLocaleString()} {pluralize("season", showSummary.seasonCount)}
+                      </span>
+                    </span>
+                    <span className="break-words text-lg font-semibold leading-tight tracking-normal">{title}</span>
+                    <span className="flex flex-wrap gap-2">
+                      <span className={cn(badgeVariants({ variant: "outline" }), "rounded-full bg-muted/45 py-1")}>
+                        <ListVideo aria-hidden="true" />
+                        {showSummary.episodeCount.toLocaleString()} {pluralize("episode", showSummary.episodeCount)}
+                      </span>
+                      <span className={cn(badgeVariants({ variant: "outline" }), "rounded-full bg-muted/45 py-1")}>
+                        <CalendarDays aria-hidden="true" />
+                        {showSummary.updatedAt ? (
+                          <span>Updated <time dateTime={showSummary.updatedAt}>{formatDate(showSummary.updatedAt)}</time></span>
+                        ) : "Update time unknown"}
+                      </span>
+                    </span>
+                  </span>
+                ) : (
+                  <>
+                    <Icon className="size-4 shrink-0 text-primary" />
+                    <span className="break-words text-lg font-semibold leading-tight tracking-normal">{title}</span>
+                  </>
+                )}
               </Button>
             </Tip>
           ) : (
