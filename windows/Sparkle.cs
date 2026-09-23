@@ -381,15 +381,8 @@ namespace Sparkle.Windows
             DirectoryPath = directory;
             Directory.CreateDirectory(directory);
             string path = Path.Combine(directory, "sparkle.log");
-            if (File.Exists(path))
-            {
-                using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                {
-                    input.Seek(Math.Max(0, input.Length - MaxCharacters / 2), SeekOrigin.Begin);
-                    using (var reader = new StreamReader(input, Encoding.UTF8)) Add(reader.ReadToEnd());
-                }
-            }
-            file = new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false)) { AutoFlush = true };
+            // A new tray session replaces the previous log on disk and in memory.
+            file = new StreamWriter(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false)) { AutoFlush = true };
             Write("app", "Sparkle tray started.");
         }
 

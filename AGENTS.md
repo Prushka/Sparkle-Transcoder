@@ -64,6 +64,9 @@ Docker image (the declared minimum is 20.9.0).
 - The tray owns its backend/encoder process tree. Preserve the startup gate,
   shutdown event, Windows job cleanup, single-instance activation, and the
   distinction between closing the logs window, stopping the backend, and Quit.
+- Each new tray session starts with an empty log buffer and replaces
+  `.sparkle-transcoder/logs/sparkle.log`. Reopening the logs window, activating
+  the existing tray, or restarting its backend preserves that session's logs.
 
 ## Working locally
 

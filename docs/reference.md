@@ -210,9 +210,11 @@ window instead of another backend. The tray menu supports **Start Sparkle**,
 **Quit**. Stop leaves the tray running; Quit stops the backend and exits.
 
 The logs window combines standard output, standard error, and launcher messages,
-with a pause control and bounded recent history. Full logs append to
+with a pause control and bounded recent history. Each new tray launch clears
+the previous session's display history and replaces
 `.sparkle-transcoder/logs/sparkle.log` under the repository root, independently
-of the backend's `DATA_DIR` setting.
+of the backend's `DATA_DIR` setting. Reopening the logs window or restarting
+the backend from the tray keeps the current session's logs.
 
 The GUI runs `launch-backend.ps1` without a console, using its ignored local
 wrapper when present, then starts the compiled backend. Shutdown first requests a graceful

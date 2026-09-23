@@ -18,10 +18,18 @@ namespace Sparkle.Windows
             {
                 Environment.SetEnvironmentVariable("SPARKLE_TEST_DIR", args[0]);
                 Application.EnableVisualStyles();
+                string logDirectory = Path.Combine(args[0], ".sparkle-transcoder", "logs");
+                string logPath = Path.Combine(logDirectory, "sparkle.log");
+                const string previousSession = "Previous tray session must not survive a new launch.";
+                Directory.CreateDirectory(logDirectory);
+                File.WriteAllText(logPath, previousSession);
                 using (var activation = new EventWaitHandle(false, EventResetMode.AutoReset))
                 using (var app = new TrayApplication(args[0], args[1], activation))
                 {
                     Wait(delegate { app.LogWindow.RefreshLogs(); return app.LogWindow.LogText.Contains("stderr: ready"); }, "capturing stdout/stderr");
+                    Check(!app.LogWindow.LogText.Contains(previousSession), "new tray launch displayed the previous session's logs");
+                    string currentLog = ReadLiveLog(logPath);
+                    Check(!currentLog.Contains(previousSession) && currentLog.Contains("stderr: ready"), "new tray launch did not replace the previous log file");
                     Check(app.LogWindow.LogText.Contains("Unicode \u65e5\u672c\u8a9e"), "UTF-8 output must survive redirection");
                     Check(File.Exists(Path.Combine(args[0], "local-launcher-used.txt")), "tray did not use the local backend launcher");
                     Check(!app.LogWindow.Visible, "startup must be tray-only");
@@ -37,6 +45,7 @@ namespace Sparkle.Windows
                     Check(app.IsRunning && app.BackendProcessId == launcher, "closing logs stopped or restarted backend");
                     activation.Set();
                     Wait(delegate { return app.LogWindow.Visible; }, "second-launch activation");
+                    Check(app.LogWindow.LogText.Contains("stderr: ready") && ReadLiveLog(logPath).Contains("stderr: ready"), "reopening the current tray session cleared its logs");
                     int child = Int32.Parse(File.ReadAllText(Path.Combine(args[0], "child-pid.txt")));
                     app.StopBackend(false, false);
                     Wait(delegate { return app.BackendProcessId == 0; }, "graceful stop");
@@ -56,6 +65,7 @@ namespace Sparkle.Windows
                 {
                     Check(!failed.IsRunning && failed.LogWindow.Visible, "startup errors must open the log window");
                     Check(failed.LogWindow.LogText.Contains("Unable to start"), "startup error details missing from logs");
+                    Check(!failed.LogWindow.LogText.Contains("stderr: ready") && !ReadLiveLog(logPath).Contains("stderr: ready"), "a subsequent tray session kept earlier backend logs");
                     failed.LogWindow.Close();
                     Check(!failed.IsQuitting, "closing failed-start logs must preserve the tray");
                     failed.StopBackend(false, true);
@@ -68,9 +78,14 @@ namespace Sparkle.Windows
                     Check(buffer.Read(ref cursor, out reset).Length <= LogBuffer.MaxCharacters && reset, "log display memory must be bounded");
                     Check(buffer.Read(ref cursor, out reset) == "", "unchanged logs should not be re-rendered");
                 }
-                File.WriteAllText(result, "PASS: hidden startup and children; UTF-8 live logs; close/reopen; activation; stop/start/restart/quit; graceful shutdown; process-tree cleanup; bounded logs.");
+                File.WriteAllText(result, "PASS: hidden startup and children; fresh session logs; UTF-8 live logs; close/reopen; activation; stop/start/restart/quit; graceful shutdown; process-tree cleanup; bounded logs.");
             }
             catch (Exception error) { File.WriteAllText(result, "FAIL: " + error); Environment.ExitCode = 1; }
+        }
+        private static string ReadLiveLog(string path)
+        {
+            using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (var reader = new StreamReader(input)) return reader.ReadToEnd();
         }
         private static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
         private static bool Gone(int pid) { try { using (var process = Process.GetProcessById(pid)) return process.HasExited; } catch (ArgumentException) { return true; } }
