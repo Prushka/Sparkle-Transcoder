@@ -22,7 +22,7 @@ if (-not (Test-Path -LiteralPath $Compiler)) { throw "The Windows .NET Framework
 
 $AppPath = Join-Path $OutputDirectory "Sparkle.exe"
 $running = @(Get-Process -Name Sparkle -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $AppPath })
-if ($running.Count) { throw "Quit Sparkle from its tray menu before rebuilding the Windows application." }
+if ($running.Count) { throw "Quit Sparkle Transcoder from its tray menu before rebuilding the Windows application." }
 
 $Stage = Join-Path $RepoRoot ("tmp\windows-build-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $Stage, $OutputDirectory | Out-Null

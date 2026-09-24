@@ -10,11 +10,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path $PSScriptRoot).Path
-$AppName = "Sparkle"
+$AppName = "Sparkle Transcoder"
 $AppPath = Join-Path $RepoRoot "bin\windows\Sparkle.exe"
 
 $ShortcutName = "$AppName.lnk"
-$LegacyShortcutNames = @("Sparkle Transcoder Backend.lnk")
+$LegacyShortcutNames = @("Sparkle.lnk", "Sparkle Transcoder Backend.lnk")
 $StartupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
 $StartMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 $StartupShortcut = Join-Path $StartupDir $ShortcutName
@@ -48,7 +48,7 @@ function New-BackendShortcut {
     $shortcut.TargetPath = $AppPath
     $shortcut.Arguments = "--repo-root `"$RepoRoot`""
     $shortcut.WorkingDirectory = $RepoRoot
-    $shortcut.Description = "Start and manage Sparkle."
+    $shortcut.Description = "Start and manage Sparkle Transcoder."
     $shortcut.IconLocation = "$AppPath,0"
     $shortcut.Save()
 
@@ -74,5 +74,5 @@ if (-not $NoStartMenu) {
 }
 
 Write-Host ""
-Write-Host "Sparkle shortcuts updated. Double-click the tray icon to view logs; use its Quit menu to exit."
+Write-Host "$AppName shortcuts updated. Double-click the tray icon to view logs; use its Quit menu to exit."
 Write-Host "For a taskbar launcher, open Start, search '$AppName', right-click it, and choose 'Pin to taskbar'."

@@ -11,7 +11,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyTitle("Sparkle")]
+[assembly: System.Reflection.AssemblyTitle("Sparkle Transcoder")]
 [assembly: System.Reflection.AssemblyProduct("Sparkle Transcoder")]
 [assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
 
@@ -41,7 +41,7 @@ namespace Sparkle.Windows
                 {
                     if (!newMutex)
                     {
-                        if (newEvent) MessageBox.Show("The older Sparkle tray launcher is still running. Quit it from its tray menu, then open Sparkle again.", "Sparkle");
+                        if (newEvent) MessageBox.Show("The older Sparkle Transcoder tray launcher is still running. Quit it from its tray menu, then open Sparkle Transcoder again.", "Sparkle Transcoder");
                         else showEvent.Set();
                         return;
                     }
@@ -59,7 +59,7 @@ namespace Sparkle.Windows
             }
             catch (Exception error)
             {
-                MessageBox.Show(error.Message, "Sparkle could not start", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(error.Message, "Sparkle Transcoder could not start", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
     }
@@ -96,16 +96,16 @@ namespace Sparkle.Windows
             statusItem = new ToolStripMenuItem("Starting") { Enabled = false };
             menu.Items.Add(statusItem);
             menu.Items.Add(new ToolStripSeparator());
-            startItem = new ToolStripMenuItem("Start Sparkle", null, delegate { StartBackend(); });
-            stopItem = new ToolStripMenuItem("Stop Sparkle", null, delegate { StopBackend(false, false); });
-            restartItem = new ToolStripMenuItem("Restart Sparkle", null, delegate { StopBackend(true, false); });
+            startItem = new ToolStripMenuItem("Start Sparkle Transcoder", null, delegate { StartBackend(); });
+            stopItem = new ToolStripMenuItem("Stop Sparkle Transcoder", null, delegate { StopBackend(false, false); });
+            restartItem = new ToolStripMenuItem("Restart Sparkle Transcoder", null, delegate { StopBackend(true, false); });
             menu.Items.AddRange(new ToolStripItem[] { startItem, stopItem, restartItem });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Open Logs", null, delegate { ShowLogs(); });
             menu.Items.Add("Open Log Folder", null, delegate { LogWindow.OpenFolder(); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Quit", null, delegate { StopBackend(false, true); });
-            tray = new NotifyIcon { Icon = icon, Text = "Sparkle", ContextMenuStrip = menu, Visible = true };
+            tray = new NotifyIcon { Icon = icon, Text = "Sparkle Transcoder", ContextMenuStrip = menu, Visible = true };
             tray.MouseDoubleClick += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowLogs(); };
             timer = new System.Windows.Forms.Timer { Interval = 250 };
             timer.Tick += delegate { Tick(); };
@@ -221,7 +221,7 @@ namespace Sparkle.Windows
                     if (restartAfterStop) { restartAfterStop = false; StartBackend(); }
                     else if (!expected)
                     {
-                        tray.ShowBalloonTip(4000, "Sparkle stopped", "Open Logs for details. Use Start Sparkle to retry.", ToolTipIcon.Warning);
+                        tray.ShowBalloonTip(4000, "Sparkle Transcoder stopped", "Open Logs for details. Use Start Sparkle Transcoder to retry.", ToolTipIcon.Warning);
                     }
                 }
             }
@@ -233,7 +233,7 @@ namespace Sparkle.Windows
         {
             string state = stopping ? "Stopping..." : IsRunning ? "Running" : "Stopped";
             statusItem.Text = "Status: " + state;
-            tray.Text = "Sparkle: " + state;
+            tray.Text = "Sparkle Transcoder: " + state;
             startItem.Enabled = backend == null && !quitting;
             stopItem.Enabled = restartItem.Enabled = backend != null && !stopping;
             LogWindow.SetStatus(state);
@@ -295,7 +295,7 @@ namespace Sparkle.Windows
         internal LogsWindow(LogBuffer buffer, Icon icon)
         {
             logs = buffer;
-            Text = "Sparkle - Logs";
+            Text = "Sparkle Transcoder - Logs";
             Icon = icon;
             StartPosition = FormStartPosition.CenterScreen;
             Size = new Size(1000, 640);
@@ -311,7 +311,7 @@ namespace Sparkle.Windows
             copy.Click += delegate
             {
                 try { if (text.TextLength > 0) Clipboard.SetText(text.Text); }
-                catch (ExternalException) { MessageBox.Show(this, "Clipboard is busy. Please try again.", "Sparkle"); }
+                catch (ExternalException) { MessageBox.Show(this, "Clipboard is busy. Please try again.", "Sparkle Transcoder"); }
             };
             header.Controls.AddRange(new Control[] { status, paused, folder, copy });
             text = new RichTextBox
@@ -321,7 +321,7 @@ namespace Sparkle.Windows
                 Font = new Font("Consolas", 10), BorderStyle = BorderStyle.None,
                 AccessibleName = "Application logs"
             };
-            var footer = new Label { Dock = DockStyle.Bottom, AutoSize = true, Padding = new Padding(10), Text = "Closing this window keeps Sparkle running. To exit, choose Quit from the tray menu." };
+            var footer = new Label { Dock = DockStyle.Bottom, AutoSize = true, Padding = new Padding(10), Text = "Closing this window keeps Sparkle Transcoder running. To exit, choose Quit from the tray menu." };
             Controls.Add(text);
             Controls.Add(header);
             Controls.Add(footer);
@@ -383,7 +383,7 @@ namespace Sparkle.Windows
             string path = Path.Combine(directory, "sparkle.log");
             // A new tray session replaces the previous log on disk and in memory.
             file = new StreamWriter(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false)) { AutoFlush = true };
-            Write("app", "Sparkle tray started.");
+            Write("app", "Sparkle Transcoder tray started.");
         }
 
         internal void Write(string source, string message)

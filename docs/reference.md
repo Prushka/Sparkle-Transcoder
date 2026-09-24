@@ -199,15 +199,17 @@ To build the Windows application and create Startup and Start Menu shortcuts:
 
 The shortcuts launch `bin/windows/Sparkle.exe` directly without a terminal
 window; the compiled backend is `bin/windows/Sparkle.Backend.exe`. The Start Menu
-entry is named **Sparkle**. To pin it to the taskbar, find Sparkle in Start,
+entry is named **Sparkle Transcoder**. The installer replaces the old **Sparkle**
+shortcuts. To pin it to the taskbar, find Sparkle Transcoder in Start,
 right-click, and select **Pin to taskbar**. The tray hosts only the backend;
 start the frontend separately.
 
 Double-click the tray icon to open live logs. Closing the logs window hides it
-and leaves Sparkle running. Launching Sparkle again opens the existing logs
-window instead of another backend. The tray menu supports **Start Sparkle**,
-**Stop Sparkle**, **Restart Sparkle**, **Open Logs**, **Open Log Folder**, and
-**Quit**. Stop leaves the tray running; Quit stops the backend and exits.
+and leaves Sparkle Transcoder running. Launching it again opens the existing logs
+window instead of another backend. The tray menu supports **Start Sparkle Transcoder**,
+**Stop Sparkle Transcoder**, **Restart Sparkle Transcoder**, **Open Logs**,
+**Open Log Folder**, and **Quit**. Stop leaves the tray running; Quit stops the
+backend and exits.
 
 The logs window combines standard output, standard error, and launcher messages,
 with a pause control and bounded recent history. Each new tray launch clears
@@ -221,8 +223,8 @@ wrapper when present, then starts the compiled backend. Shutdown first requests 
 stop; after 12 seconds the tray terminates remaining managed processes. Windows
 job ownership also cleans up backend/encoder children if the tray crashes.
 
-To rebuild, quit Sparkle and run `./install-backend-startup.ps1` again (or its
-local wrapper). The installer accepts `-GoExe <path>`. For a
+To rebuild, quit Sparkle Transcoder and run `./install-backend-startup.ps1` again
+(or its local wrapper). The installer accepts `-GoExe <path>`. For a
 build without installing shortcuts, use `./build-windows-app.ps1`; it accepts
 `-GoExe <path>` and `-OutputDirectory <path>`. Launch with
 `./bin/windows/Sparkle.exe` or `./launch-backend-tray.ps1 -ShowLogs`. Keep the
@@ -238,7 +240,8 @@ shortcut. To remove both shortcuts (without deleting binaries or task data):
 
 When upgrading from the older PowerShell tray launcher, quit the old instance
 first. If a taskbar pin still points to the old launcher, unpin it and re-pin
-Sparkle from Start. Ensure the media drive is available when starting the app.
+Sparkle Transcoder from Start. Ensure the media drive is available when starting
+the app.
 
 ## Docker frontend and publishing
 

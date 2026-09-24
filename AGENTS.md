@@ -27,7 +27,8 @@ frontend, and an optional Windows Forms tray host.
 - `web/lib/backend-proxy.ts` and `web/app/`: runtime API/output proxy and pages.
 - `windows/Sparkle.cs` and root PowerShell scripts: tray host, builds, launch,
   and shortcut installation. There is no .NET SDK project; scripts use the
-  Windows .NET Framework C# compiler.
+  Windows .NET Framework C# compiler. The Windows display and shortcut name is
+  **Sparkle Transcoder**; the executable remains `bin/windows/Sparkle.exe`.
 - `.github/workflows/docker.yml`: Linux checks and frontend image publishing.
 
 The root Go module is `sparkle-transcoder` and requires Go 1.26.0 or newer.
