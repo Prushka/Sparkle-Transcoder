@@ -19,9 +19,13 @@ namespace Sparkle.Windows
 {
     internal static class Program
     {
+        [DllImport("user32.dll")] internal static extern bool SetProcessDPIAware();
+
         [STAThread]
         private static void Main(string[] args)
         {
+            // Set system DPI awareness before WinForms creates any UI.
+            SetProcessDPIAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             try

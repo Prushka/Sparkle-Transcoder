@@ -87,6 +87,7 @@ binds all interfaces; use `127.0.0.1:1323` for access only from the same PC.
 Startup and Start Menu shortcuts named **Sparkle Transcoder**. Double-click
 the tray icon for logs; use **Quit** to stop the backend. The frontend runs separately. Builds require
 Windows 10/11 and the Windows .NET Framework C# compiler.
+The tray app uses system DPI awareness for sharp text at the system display scale.
 Each new tray launch starts a fresh log in the window and on disk.
 [Tray setup and controls](docs/reference.md#windows-startup-and-tray-launcher).
 

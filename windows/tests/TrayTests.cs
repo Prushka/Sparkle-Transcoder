@@ -17,6 +17,7 @@ namespace Sparkle.Windows
             try
             {
                 Environment.SetEnvironmentVariable("SPARKLE_TEST_DIR", args[0]);
+                Program.SetProcessDPIAware();
                 Application.EnableVisualStyles();
                 string logDirectory = Path.Combine(args[0], ".sparkle-transcoder", "logs");
                 string logPath = Path.Combine(logDirectory, "sparkle.log");

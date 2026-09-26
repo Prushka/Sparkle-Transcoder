@@ -68,6 +68,8 @@ Docker image (the declared minimum is 20.9.0).
 - Each new tray session starts with an empty log buffer and replaces
   `.sparkle-transcoder/logs/sparkle.log`. Reopening the logs window, activating
   the existing tray, or restarting its backend preserves that session's logs.
+- The tray enables system DPI awareness before initializing WinForms. Keep
+  the tray test entry point's DPI initialization consistent with production.
 
 ## Working locally
 
