@@ -35,6 +35,7 @@ internal static class FakeBackend
         }
         File.WriteAllText(Path.Combine(directory, "graceful-stop.txt"), "yes");
         Console.WriteLine("graceful shutdown complete");
+        Console.Error.WriteLine("final stderr cleanup");
         // Deliberately leave the child alive to test job-based cleanup.
     }
 }

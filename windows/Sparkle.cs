@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -250,7 +251,13 @@ namespace Sparkle.Windows
             if (job != null) { job.Dispose(); job = null; }
             if (backend != null)
             {
-                try { if (backend.HasExited) backend.WaitForExit(); } catch (InvalidOperationException) { }
+                try
+                {
+                    // Drain final stdout/stderr before the tray archives its log,
+                    // including when closing the job just terminated the launcher.
+                    if (backend.WaitForExit(5000)) backend.WaitForExit();
+                }
+                catch (InvalidOperationException) { }
                 backend.Dispose();
                 backend = null;
             }
@@ -371,23 +378,115 @@ namespace Sparkle.Windows
     internal sealed class LogBuffer : IDisposable
     {
         internal const int MaxCharacters = 250000;
+        internal const int MaxArchives = 5;
+        internal const string ArchiveTimeFormat = "yyyy-MM-dd_HH-mm-ss.fffffff'Z'";
         private readonly object sync = new object();
         private readonly Queue<KeyValuePair<long, string>> entries = new Queue<KeyValuePair<long, string>>();
-        private readonly StreamWriter file;
+        private StreamWriter file;
+        private readonly string filePath;
         private int characters;
         private long sequence;
         private bool disposed;
         internal readonly string DirectoryPath;
         private static readonly Regex Ansi = new Regex("\x1b\\[[0-9;]*[a-zA-Z]", RegexOptions.Compiled);
+        private static readonly Regex ArchiveName = new Regex(@"\Asparkle-(?<time>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\d{7}Z)(?:-recovered)?(?:-(?<sequence>\d{4,}))?\.log\z", RegexOptions.Compiled);
 
         internal LogBuffer(string directory)
         {
             DirectoryPath = directory;
             Directory.CreateDirectory(directory);
-            string path = Path.Combine(directory, "sparkle.log");
-            // A new tray session replaces the previous log on disk and in memory.
-            file = new StreamWriter(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false)) { AutoFlush = true };
+            filePath = Path.Combine(directory, "sparkle.log");
+            string failure = null;
+            try
+            {
+                // A killed tray cannot record its exit. Mark the last-write time
+                // explicitly as recovered instead of inventing an exit timestamp.
+                if (File.Exists(filePath) && new FileInfo(filePath).Length > 0)
+                    ArchiveFile(File.GetLastWriteTimeUtc(filePath), true);
+                PruneArchives();
+            }
+            catch (IOException error) { failure = error.Message; }
+            catch (UnauthorizedAccessException error) { failure = error.Message; }
+            // If rotation failed, append rather than destroy the previous log.
+            file = OpenFile();
             Write("app", "Sparkle Transcoder tray started.");
+            if (failure != null) Write("app", "Could not archive or prune logs: " + failure);
+        }
+
+        // Only a tray exit ends the session; backend restarts keep the same log.
+        internal void EndSession(DateTime exitedAtUtc)
+        {
+            lock (sync)
+            {
+                if (disposed || file.BaseStream.Length == 0) return;
+                Write("app", "Sparkle Transcoder tray exited at " + exitedAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) + ".");
+                file.Dispose();
+                string failure = null;
+                try { ArchiveFile(exitedAtUtc, false); PruneArchives(); }
+                catch (IOException error) { failure = error.Message; }
+                catch (UnauthorizedAccessException error) { failure = error.Message; }
+                finally { file = OpenFile(); }
+                if (failure != null) Write("app", "Could not archive or prune logs: " + failure);
+            }
+        }
+
+        private StreamWriter OpenFile()
+        {
+            return new StreamWriter(new FileStream(filePath, FileMode.Append, FileAccess.Write,
+                FileShare.ReadWrite | FileShare.Delete), new UTF8Encoding(false)) { AutoFlush = true };
+        }
+
+        private void ArchiveFile(DateTime timestampUtc, bool recovered)
+        {
+            string name = "sparkle-" + timestampUtc.ToUniversalTime().ToString(ArchiveTimeFormat, CultureInfo.InvariantCulture)
+                + (recovered ? "-recovered" : "");
+            int lastSuffix = -1;
+            foreach (string path in Directory.GetFiles(DirectoryPath, name + "*.log", SearchOption.TopDirectoryOnly))
+            {
+                string stem = Path.GetFileNameWithoutExtension(path);
+                int suffix;
+                if (stem == name) lastSuffix = Math.Max(lastSuffix, 0);
+                else if (stem.StartsWith(name + "-", StringComparison.Ordinal) && Int32.TryParse(stem.Substring(name.Length + 1),
+                    NumberStyles.None, CultureInfo.InvariantCulture, out suffix) && suffix > 0)
+                    lastSuffix = Math.Max(lastSuffix, suffix);
+            }
+            // Keep increasing after retention removes the original filename.
+            if (lastSuffix == Int32.MaxValue) throw new IOException("Too many logs share the same exit timestamp.");
+            string destination = Path.Combine(DirectoryPath, name
+                + (lastSuffix < 0 ? "" : "-" + (lastSuffix + 1).ToString("D4", CultureInfo.InvariantCulture)) + ".log");
+            File.Move(filePath, destination);
+        }
+
+        private sealed class Archive
+        {
+            internal string Path;
+            internal DateTime Timestamp;
+            internal int Sequence;
+        }
+
+        private void PruneArchives()
+        {
+            var archives = new List<Archive>();
+            foreach (string path in Directory.GetFiles(DirectoryPath, "sparkle-*.log", SearchOption.TopDirectoryOnly))
+            {
+                Match match = ArchiveName.Match(Path.GetFileName(path));
+                DateTime timestamp;
+                int sequence = 0;
+                if (!match.Success || !DateTime.TryParseExact(match.Groups["time"].Value, ArchiveTimeFormat,
+                    CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out timestamp)) continue;
+                if (match.Groups["sequence"].Success && (!Int32.TryParse(match.Groups["sequence"].Value,
+                    NumberStyles.None, CultureInfo.InvariantCulture, out sequence) || sequence <= 0)) continue;
+                archives.Add(new Archive { Path = path, Timestamp = timestamp, Sequence = sequence });
+            }
+            // Use exit timestamps, not mutable filesystem dates. For collisions,
+            // the unsuffixed original is older than its numbered successors.
+            archives.Sort(delegate(Archive left, Archive right)
+            {
+                int order = left.Timestamp.CompareTo(right.Timestamp);
+                if (order == 0) order = left.Sequence.CompareTo(right.Sequence);
+                return order == 0 ? StringComparer.Ordinal.Compare(left.Path, right.Path) : order;
+            });
+            for (int i = 0; i < archives.Count - MaxArchives; i++) File.Delete(archives[i].Path);
         }
 
         internal void Write(string source, string message)
@@ -425,7 +524,15 @@ namespace Sparkle.Windows
             }
         }
 
-        public void Dispose() { lock (sync) { disposed = true; file.Dispose(); } }
+        public void Dispose()
+        {
+            lock (sync)
+            {
+                if (disposed) return;
+                try { EndSession(DateTime.UtcNow); }
+                finally { disposed = true; file.Dispose(); }
+            }
+        }
     }
 
     // Job membership is inherited by children. The last handle closing also

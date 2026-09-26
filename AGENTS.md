@@ -65,9 +65,12 @@ Docker image (the declared minimum is 20.9.0).
 - The tray owns its backend/encoder process tree. Preserve the startup gate,
   shutdown event, Windows job cleanup, single-instance activation, and the
   distinction between closing the logs window, stopping the backend, and Quit.
-- Each new tray session starts with an empty log buffer and replaces
-  `.sparkle-transcoder/logs/sparkle.log`. Reopening the logs window, activating
-  the existing tray, or restarting its backend preserves that session's logs.
+- Each tray session uses `.sparkle-transcoder/logs/sparkle.log` and archives it
+  on tray exit with a UTC exit timestamp. Keep the five newest archives, deleting
+  only older files matching the archive name format. Recover a leftover current
+  log on startup using its last-write timestamp and a `-recovered` suffix; never
+  truncate an unarchived log when rotation fails. Reopening the logs window,
+  activating the existing tray, or restarting its backend keeps the same session.
 - The tray enables system DPI awareness before initializing WinForms. Keep
   the tray test entry point's DPI initialization consistent with production.
 

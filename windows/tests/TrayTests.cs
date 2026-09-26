@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -21,9 +22,12 @@ namespace Sparkle.Windows
                 Application.EnableVisualStyles();
                 string logDirectory = Path.Combine(args[0], ".sparkle-transcoder", "logs");
                 string logPath = Path.Combine(logDirectory, "sparkle.log");
-                const string previousSession = "Previous tray session must not survive a new launch.";
+                const string previousSession = "Previous tray session belongs in an archive.";
                 Directory.CreateDirectory(logDirectory);
                 File.WriteAllText(logPath, previousSession);
+                var recoveredAt = new DateTime(2001, 2, 3, 4, 5, 6, DateTimeKind.Utc);
+                File.SetLastWriteTimeUtc(logPath, recoveredAt);
+                DateTime sessionStartedAt = DateTime.UtcNow;
                 using (var activation = new EventWaitHandle(false, EventResetMode.AutoReset))
                 using (var app = new TrayApplication(args[0], args[1], activation))
                 {
@@ -31,6 +35,7 @@ namespace Sparkle.Windows
                     Check(!app.LogWindow.LogText.Contains(previousSession), "new tray launch displayed the previous session's logs");
                     string currentLog = ReadLiveLog(logPath);
                     Check(!currentLog.Contains(previousSession) && currentLog.Contains("stderr: ready"), "new tray launch did not replace the previous log file");
+                    Check(ReadLiveLog(ArchivePath(logDirectory, recoveredAt, "-recovered")).Contains(previousSession), "unclean session was not recovered before opening the current log");
                     Check(app.LogWindow.LogText.Contains("Unicode \u65e5\u672c\u8a9e"), "UTF-8 output must survive redirection");
                     Check(File.Exists(Path.Combine(args[0], "local-launcher-used.txt")), "tray did not use the local backend launcher");
                     Check(!app.LogWindow.Visible, "startup must be tray-only");
@@ -58,9 +63,24 @@ namespace Sparkle.Windows
                     launcher = app.BackendProcessId;
                     app.StopBackend(true, false);
                     Wait(delegate { return app.IsRunning && app.BackendProcessId != launcher; }, "restart");
+                    Check(Directory.GetFiles(logDirectory, "sparkle-*.log").Length == 1, "backend restart or opening logs archived the active tray session");
                     app.StopBackend(false, true);
                     Wait(delegate { return app.BackendProcessId == 0; }, "quit");
                     Check(app.IsQuitting, "Quit did not end application lifetime");
+                }
+                string[] sessionArchives = Directory.GetFiles(logDirectory, "sparkle-*.log");
+                Check(sessionArchives.Length == 2, "tray exit did not archive its session exactly once");
+                foreach (string archive in sessionArchives)
+                {
+                    if (archive.EndsWith("-recovered.log", StringComparison.Ordinal)) continue;
+                    string name = Path.GetFileNameWithoutExtension(archive).Substring("sparkle-".Length);
+                    DateTime exitedAt = DateTime.ParseExact(name, LogBuffer.ArchiveTimeFormat, CultureInfo.InvariantCulture,
+                        DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
+                    Check(exitedAt >= sessionStartedAt && exitedAt <= DateTime.UtcNow, "archive filename does not record the tray exit time");
+                    string content = ReadLiveLog(archive);
+                    Check(content.Contains("tray exited at " + exitedAt.ToString("O", CultureInfo.InvariantCulture)), "archive omitted its exit timestamp");
+                    Check(Count(content, "graceful shutdown complete") == 3 && Count(content, "final stderr cleanup") == 3,
+                        "archive lost final backend stdout/stderr across stop, restart, or quit");
                 }
                 using (var failed = new TrayApplication(args[0], Path.Combine(args[0], "missing.exe"), null))
                 {
@@ -79,10 +99,91 @@ namespace Sparkle.Windows
                     Check(buffer.Read(ref cursor, out reset).Length <= LogBuffer.MaxCharacters && reset, "log display memory must be bounded");
                     Check(buffer.Read(ref cursor, out reset) == "", "unchanged logs should not be re-rendered");
                 }
-                File.WriteAllText(result, "PASS: hidden startup and children; fresh session logs; UTF-8 live logs; close/reopen; activation; stop/start/restart/quit; graceful shutdown; process-tree cleanup; bounded logs.");
+                CheckLogRetention(args[0]);
+                File.WriteAllText(result, "PASS: hidden startup and children; fresh session logs; five exit-timestamped archives; recovery, retention, collision and locked-file safety; final stdout/stderr; UTF-8 live logs; close/reopen; activation; stop/start/restart/quit; graceful shutdown; process-tree cleanup; bounded display logs.");
             }
             catch (Exception error) { File.WriteAllText(result, "FAIL: " + error); Environment.ExitCode = 1; }
         }
+        private static string ArchivePath(string directory, DateTime timestamp, string suffix)
+        {
+            return Path.Combine(directory, "sparkle-" + timestamp.ToString(LogBuffer.ArchiveTimeFormat, CultureInfo.InvariantCulture) + suffix + ".log");
+        }
+        private static void CheckLogRetention(string root)
+        {
+            string directory = Path.Combine(root, "retention");
+            var exitedAt = new DateTime(2001, 2, 3, 4, 5, 6, DateTimeKind.Utc);
+            using (var buffer = new LogBuffer(directory))
+            {
+                string unrelated = Path.Combine(directory, "sparkle-unrelated.log");
+                string invalidDate = Path.Combine(directory, "sparkle-1999-99-99_00-00-00.0000000Z.log");
+                File.WriteAllText(unrelated, "keep");
+                File.WriteAllText(invalidDate, "keep");
+                string nested = Path.Combine(directory, "nested");
+                Directory.CreateDirectory(nested);
+                File.WriteAllText(ArchivePath(nested, exitedAt.AddDays(-1), ""), "keep");
+                for (int i = 0; i < 8; i++)
+                {
+                    buffer.Write("test", "session " + i);
+                    buffer.EndSession(exitedAt.AddSeconds(i));
+                    // Retention must use the filename's exit time, not file dates.
+                    File.SetLastWriteTimeUtc(ArchivePath(directory, exitedAt.AddSeconds(i), ""), exitedAt.AddDays(-i));
+                }
+                Check(Directory.GetFiles(directory, "sparkle-2001-*.log").Length == 5, "retention did not keep exactly five archives");
+                for (int i = 0; i < 8; i++)
+                {
+                    string path = ArchivePath(directory, exitedAt.AddSeconds(i), "");
+                    if (i < 3) Check(!File.Exists(path), "oldest archive was retained");
+                    else Check(ReadLiveLog(path).Contains("session " + i), "newest archive was lost");
+                }
+                Check(File.Exists(unrelated) && File.Exists(invalidDate) && Directory.GetFiles(nested).Length == 1,
+                    "retention deleted unrelated or nested files");
+                Check(ReadLiveLog(Path.Combine(directory, "sparkle.log")) == "", "archived content remained in the current log");
+            }
+            Check(Directory.GetFiles(directory, "sparkle-2001-*.log").Length == 5, "disposing an archived session added a duplicate archive");
+
+            directory = Path.Combine(root, "collisions");
+            using (var buffer = new LogBuffer(directory))
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    buffer.Write("test", "collision " + i);
+                    buffer.EndSession(exitedAt);
+                }
+                Check(Directory.GetFiles(directory, "sparkle-*.log").Length == 5, "timestamp collision bypassed retention");
+                for (int i = 0; i < 8; i++)
+                {
+                    string path = ArchivePath(directory, exitedAt, i == 0 ? "" : "-" + i.ToString("D4", CultureInfo.InvariantCulture));
+                    if (i < 3) Check(!File.Exists(path), "timestamp collision kept an older log");
+                    else Check(ReadLiveLog(path).Contains("collision " + i), "timestamp collision overwrote or discarded a newer log");
+                }
+            }
+
+            directory = Path.Combine(root, "locked-log");
+            var locked = new LogBuffer(directory);
+            string current = Path.Combine(directory, "sparkle.log");
+            locked.Write("test", "preserve despite blocked rename");
+            using (var viewer = new FileStream(current, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                locked.Dispose();
+                Check(ReadLiveLog(current).Contains("preserve despite blocked rename"), "failed exit rotation discarded the current log");
+                using (var next = new LogBuffer(directory))
+                {
+                    Check(ReadLiveLog(current).Contains("preserve despite blocked rename"), "failed startup rotation truncated the previous log");
+                    Check(ReadLiveLog(current).Contains("Could not archive or prune logs"), "blocked rotation was not reported");
+                }
+            }
+            using (var next = new LogBuffer(directory))
+            {
+                string[] recovered = Directory.GetFiles(directory, "sparkle-*-recovered.log");
+                Check(recovered.Length == 1 && ReadLiveLog(recovered[0]).Contains("preserve despite blocked rename"),
+                    "previous log was not recovered after the viewer closed");
+                Check(!ReadLiveLog(current).Contains("preserve despite blocked rename"), "recovery did not start a fresh current log");
+                // The memory limit must never truncate the full disk log.
+                next.Write("test", new String('x', LogBuffer.MaxCharacters * 2) + "disk log tail");
+                Check(ReadLiveLog(current).Contains("disk log tail"), "display bounding truncated the disk log");
+            }
+        }
+        private static int Count(string text, string term) { return (text.Length - text.Replace(term, "").Length) / term.Length; }
         private static string ReadLiveLog(string path)
         {
             using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))

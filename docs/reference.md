@@ -212,11 +212,20 @@ window instead of another backend. The tray menu supports **Start Sparkle Transc
 backend and exits.
 
 The logs window combines standard output, standard error, and launcher messages,
-with a pause control and bounded recent history. Each new tray launch clears
-the previous session's display history and replaces
-`.sparkle-transcoder/logs/sparkle.log` under the repository root, independently
-of the backend's `DATA_DIR` setting. Reopening the logs window or restarting
-the backend from the tray keeps the current session's logs.
+with a pause control and bounded recent display history. Each tray session writes
+its full log to `.sparkle-transcoder/logs/sparkle.log` under the repository root,
+independently of the backend's `DATA_DIR` setting. Reopening the logs window or
+restarting the backend from the tray keeps the same session log.
+
+When the tray exits, it archives that session as
+`sparkle-yyyy-MM-dd_HH-mm-ss.fffffffZ.log`, using the UTC exit timestamp. It keeps
+the five newest completed logs plus the active log and deletes only older files
+matching that archive format. Timestamp collisions receive numbered suffixes;
+unrelated files are left alone. The next launch starts a fresh log. After a forced
+exit, a leftover `sparkle.log` is preserved with a `-recovered` suffix and its last
+write time, since the exact exit time is unavailable. If an open viewer or file
+permissions prevent rotation, the app appends to the existing file rather than
+discarding it and retries at the next session boundary.
 
 The GUI runs `launch-backend.ps1` without a console, using its ignored local
 wrapper when present, then starts the compiled backend. Shutdown first requests a graceful
