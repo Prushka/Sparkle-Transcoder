@@ -88,6 +88,7 @@ Startup and Start Menu shortcuts named **Sparkle Transcoder**. Double-click
 the tray icon for logs; use **Quit** to stop the backend. The frontend runs separately. Builds require
 Windows 10/11 and the Windows .NET Framework C# compiler.
 The tray app uses system DPI awareness for sharp text at the system display scale.
+The tray and frontend share a yellow play icon surrounded by conversion arrows.
 Each new tray launch starts a fresh log. The last five completed tray logs are
 kept with UTC exit timestamps in `.sparkle-transcoder/logs`; only older archives
 are deleted. A log left by a forced exit is recovered on the next launch.

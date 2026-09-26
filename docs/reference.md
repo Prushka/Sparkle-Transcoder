@@ -240,6 +240,11 @@ build without installing shortcuts, use `./build-windows-app.ps1`; it accepts
 repository's launcher script available; the tray resolves the repository root
 relative to `bin/windows`, or from `--repo-root <path>`.
 
+The Windows and web icons come from `assets/sparkle-transcoder.svg`. To regenerate
+their PNG and ICO exports after editing the SVG, install the frontend dependencies
+with `npm ci --prefix web`, then run `node assets/generate-icons.mjs` from the
+repository root. The ICO includes 16, 24, 32, 48, 64, 128, and 256 pixel images.
+
 The installer supports `-NoStartup` and `-NoStartMenu` to skip creating either
 shortcut. To remove both shortcuts (without deleting binaries or task data):
 
