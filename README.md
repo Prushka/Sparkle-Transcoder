@@ -85,8 +85,10 @@ binds all interfaces; use `127.0.0.1:1323` for access only from the same PC.
 
 **Windows tray:** run `./install-backend-startup.ps1` to build the app and add
 Startup and Start Menu shortcuts named **Sparkle Transcoder**. Double-click
-the tray icon for logs; use **Quit** to stop the backend. The frontend runs separately. Builds require
-Windows 10/11 and the Windows .NET Framework C# compiler.
+the tray icon for logs; use **Quit** to stop the backend. **Rebuild and Restart
+Sparkle Transcoder** builds the backend from the current checkout and restarts it
+after a successful build, keeping the tray and its log session alive. The frontend
+runs separately. Builds require Windows 10/11 and the Windows .NET Framework C# compiler.
 The tray app uses system DPI awareness for sharp text at the system display scale.
 The tray and frontend share a yellow play icon surrounded by conversion arrows.
 Each new tray launch starts a fresh log. The last five completed tray logs are

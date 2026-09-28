@@ -207,9 +207,20 @@ start the frontend separately.
 Double-click the tray icon to open live logs. Closing the logs window hides it
 and leaves Sparkle Transcoder running. Launching it again opens the existing logs
 window instead of another backend. The tray menu supports **Start Sparkle Transcoder**,
-**Stop Sparkle Transcoder**, **Restart Sparkle Transcoder**, **Open Logs**,
+**Stop Sparkle Transcoder**, **Restart Sparkle Transcoder**,
+**Rebuild and Restart Sparkle Transcoder**, **Open Logs**,
 **Open Log Folder**, and **Quit**. Stop leaves the tray running; Quit stops the
 backend and exits.
+
+**Rebuild and Restart Sparkle Transcoder** compiles the backend from the current
+checkout in the background while the existing backend continues running. After
+a successful build, it gracefully stops the backend, replaces its executable,
+and starts it again. Startup recovery reruns interrupted tasks from scratch.
+Build output appears in the current session log. A failed build keeps the
+existing backend running and opens the logs; a replacement failure restarts the
+previous executable. The action also works while stopped. Other lifecycle
+actions are disabled during the build; **Quit** cancels the compiler process
+tree and shuts down. This rebuild keeps the tray host and frontend unchanged.
 
 The logs window combines standard output, standard error, and launcher messages,
 with a pause control and bounded recent display history. Each tray session writes
@@ -232,10 +243,15 @@ wrapper when present, then starts the compiled backend. Shutdown first requests 
 stop; after 12 seconds the tray terminates remaining managed processes. Windows
 job ownership also cleans up backend/encoder children if the tray crashes.
 
-To rebuild, quit Sparkle Transcoder and run `./install-backend-startup.ps1` again
-(or its local wrapper). The installer accepts `-GoExe <path>`. For a
-build without installing shortcuts, use `./build-windows-app.ps1`; it accepts
-`-GoExe <path>` and `-OutputDirectory <path>`. Launch with
+To rebuild the tray host itself, quit Sparkle Transcoder and run
+`./install-backend-startup.ps1` again (or its local wrapper). The installer
+accepts `-GoExe <path>` and saves the resolved compiler path in
+`bin/windows/Sparkle.Go.txt` for subsequent tray rebuilds. Go and the source
+checkout must remain available. For a build without installing shortcuts, use
+`./build-windows-app.ps1`; it accepts
+`-GoExe <path>` and `-OutputDirectory <path>`. Add `-BackendOnly` to compile just
+the backend into the selected output directory; the tray uses a temporary
+directory beside the installed executable for this. Launch with
 `./bin/windows/Sparkle.exe` or `./launch-backend-tray.ps1 -ShowLogs`. Keep the
 repository's launcher script available; the tray resolves the repository root
 relative to `bin/windows`, or from `--repo-root <path>`.

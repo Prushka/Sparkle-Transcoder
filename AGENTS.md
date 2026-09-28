@@ -68,6 +68,11 @@ Docker image (the declared minimum is 20.9.0).
 - The tray owns its backend/encoder process tree. Preserve the startup gate,
   shutdown event, Windows job cleanup, single-instance activation, and the
   distinction between closing the logs window, stopping the backend, and Quit.
+- Tray rebuilds run `build-windows-app.ps1 -BackendOnly` in a staged directory
+  beside the installed backend, keeping it running until compilation succeeds.
+  Preserve atomic replacement, recovery on replacement failure, build-process
+  ownership and cancellation on Quit. Full builds save the Go compiler path in
+  `bin/windows/Sparkle.Go.txt`; rebuilds keep the tray and its log session alive.
 - Each tray session uses `.sparkle-transcoder/logs/sparkle.log` and archives it
   on tray exit with a UTC exit timestamp. Keep the five newest archives, deleting
   only older files matching the archive name format. Recover a leftover current

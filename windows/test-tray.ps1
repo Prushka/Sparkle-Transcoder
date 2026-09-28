@@ -8,6 +8,7 @@ if (-not (Test-Path -LiteralPath $Compiler)) { $Compiler = Join-Path $env:System
 $TestRoot = Join-Path $RepoRoot ("tmp\tray test " + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $TestRoot | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "launch-backend.ps1") -Destination $TestRoot
+Copy-Item -LiteralPath (Join-Path $RepoRoot "build-windows-app.ps1") -Destination $TestRoot
 @'
 param([string]$BackendExecutable)
 Set-Content -LiteralPath (Join-Path $PSScriptRoot 'local-launcher-used.txt') -Value 'yes'
@@ -17,12 +18,20 @@ $FakeBackend = Join-Path $TestRoot "FakeBackend.exe"
 $TestApp = Join-Path $TestRoot "TrayTests.exe"
 & $Compiler /nologo /target:exe "/out:$FakeBackend" "$PSScriptRoot\tests\FakeBackend.cs"
 if ($LASTEXITCODE -ne 0) { throw "Fake backend compilation failed." }
+Copy-Item -LiteralPath $FakeBackend -Destination (Join-Path $TestRoot 'NextBackend.exe')
+$FakeGo = Join-Path $TestRoot 'FakeGo.exe'
+& $Compiler /nologo /target:exe "/out:$FakeGo" "$PSScriptRoot\tests\FakeGo.cs"
+if ($LASTEXITCODE -ne 0) { throw 'Fake Go compiler compilation failed.' }
+[IO.File]::WriteAllText((Join-Path $TestRoot 'Sparkle.Go.txt'), $FakeGo)
 & $Compiler /nologo /target:winexe /main:Sparkle.Windows.TrayTests `
     /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll `
     "/out:$TestApp" "$PSScriptRoot\Sparkle.cs" "$PSScriptRoot\tests\TrayTests.cs"
 if ($LASTEXITCODE -ne 0) { throw "Tray test compilation failed." }
 $process = Start-Process -FilePath $TestApp -ArgumentList "`"$TestRoot`" `"$FakeBackend`"" -WindowStyle Hidden -PassThru
-if (-not $process.WaitForExit(60000)) {
+# Poll in bounded intervals so an expanded integration suite can finish.
+$deadline = [DateTime]::UtcNow.AddSeconds(120)
+while (-not $process.WaitForExit(1000) -and [DateTime]::UtcNow -lt $deadline) { }
+if (-not $process.HasExited) {
     $process.Kill()
     throw "Tray integration tests timed out. Logs: $TestRoot"
 }
